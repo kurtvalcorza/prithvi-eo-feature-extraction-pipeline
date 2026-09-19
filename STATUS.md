@@ -1,0 +1,3 @@
+# Release status
+
+Current status: **Candidate** — the `E2E` tutorial notebook `tutorials/prithvi_eo_feature_extraction_colab.ipynb` has executed top-to-bottom on the local pre-flight harness (WSL, RTX 5070 Ti, the snapshot, the converted safetensors and the tarball pre-staged; 10/10 code cells, 89.5 s) but not yet in a clean supported runtime. The pipeline package with its probe contract, the offline unit suite, the model-backed test, `MODEL_CARD.md` (MODEL_CARD_SPEC 1.1), the static validator (`tools/validate_release_assets.py`), the generator parity checks and the CI workflow exist and are green. The registry moves to **Release-grade** only when a clean-runtime run of the committed notebook blob is recorded in `docs/release-verification.md`.

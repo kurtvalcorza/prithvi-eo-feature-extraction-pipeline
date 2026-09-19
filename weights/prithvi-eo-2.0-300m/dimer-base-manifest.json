@@ -1,0 +1,45 @@
+{
+  "format": "dimer_hf_snapshot",
+  "formatVersion": 1,
+  "modelKey": "prithvi-eo-2.0-300m",
+  "modelId": "ibm-nasa-geospatial/Prithvi-EO-2.0-300M",
+  "revision": "9eb1b1102806593963daa333bcc491b1c6f8562f",
+  "files": [
+    {
+      "path": "Prithvi_EO_V2_300M.pt",
+      "bytes": 1326658396,
+      "sha256": "faab2c8b776f0723f93431747603a7ec586a54fc45473613b4322c29752486e7"
+    },
+    {
+      "path": "README.md",
+      "bytes": 7835,
+      "sha256": "0f85c7d59f91566bd7c8a11793ad0e4a342d22b88bd8d470a7a27c1f5ed53917"
+    },
+    {
+      "path": "config.json",
+      "bytes": 753,
+      "sha256": "748bc314d9b0653b00e3a2eaf14b69b4c27a295d73eb0b85112fe21bd2c36aa8"
+    },
+    {
+      "path": "examples/Mexico_HLS.S30.T13REM.2018026T173609.v2.0_cropped.tif",
+      "bytes": 3014272,
+      "sha256": "e34c1e8f6b69092bbf16f87da1a0c2337e8e53f28d172d8076e2efab292b795d"
+    },
+    {
+      "path": "examples/Mexico_HLS.S30.T13REM.2018106T172859.v2.0_cropped.tif",
+      "bytes": 3014272,
+      "sha256": "a4b24a34d83d25cac7dbcb7742db3f5b1e4849e5773172c1f0fc43c541bcd3fd"
+    },
+    {
+      "path": "examples/Mexico_HLS.S30.T13REM.2018201T172901.v2.0_cropped.tif",
+      "bytes": 3014272,
+      "sha256": "fce050cc821ebec2974e85cfe702c0f093d74caf12196adb7ee88c8a30773d4f"
+    },
+    {
+      "path": "examples/Mexico_HLS.S30.T13REM.2018266T173029.v2.0_cropped.tif",
+      "bytes": 3014272,
+      "sha256": "f7f8c67c32027cd663f48226a5932c6c8119a55fb6e80a02636dea57f4733963"
+    }
+  ],
+  "totalBytes": 1338724072
+}
