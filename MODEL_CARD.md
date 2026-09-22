@@ -164,7 +164,7 @@ The model must not be used to direct evacuation, aid, insurance, damage assessme
 | Input contract | (6, T, H, W) stacks of one to four dates with sides multiples of 16 in [64, 1024] as arrays or GeoTIFFs for embeddings and reconstruction; 512 × 512 chips with 0 / 1 / −1 labels for the probe; surface reflectance in [0, 1] or × 10 000 |
 | Sample data | the four example tiles of the model snapshot; the HLS Burn Scars tarball (CC BY 4.0) fetched at run time from the Hub at an immutable revision, 88 pinned members extracted, never vendored |
 
-**One thing is open, and it is neither the licence nor the code:** whether a one-time unpickle through torch's weights-only loader, after a static audit with a pinned digest — in the build and in the tutorial runtime, where the notebook converts what it downloads — meets the DIMER bar, or whether DIMER should host only the safetensors converted and verified once by the maintainer. The served artifact is the same file either way.
+**One thing is open, and it is neither the licence nor the code:** whether a one-time unpickle through torch's weights-only loader, after a static audit with a pinned digest — in the build and in the tutorial runtime, where the notebook converts what it downloads — meets the bar for redistribution, or whether only the safetensors converted and verified once by the maintainer should be published. The served artifact is the same file either way.
 
 ## Runtime
 
