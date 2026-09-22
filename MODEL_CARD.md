@@ -5,7 +5,7 @@ pipeline_tag: image-feature-extraction
 task: "Others - Earth Observation Feature Extraction (HLS embeddings, masked reconstruction, linear probe)"
 base_model: ibm-nasa-geospatial/Prithvi-EO-2.0-300M
 date_published: "2024-12-03"
-date_published_source: "Hugging Face Hub commit `ebfff1d8` (\"added model weights\", 2024-12-03) that first published `Prithvi_EO_V2_300M.pt`; the pinned revision `9eb1b110…` (2025-10-09, \"Update README.md\") carries the identical checkpoint bytes (SHA-256 `faab2c8b…`). The Prithvi-EO-2.0 preprint (arXiv:2412.02732) is from December 2024; the fleet inventory's `2024-12` names the same publication."
+date_published_source: "Hugging Face Hub commit `ebfff1d8` (\"added model weights\", 2024-12-03) that first published `Prithvi_EO_V2_300M.pt`; the pinned revision `9eb1b110…` (2025-10-09, \"Update README.md\") carries the identical checkpoint bytes (SHA-256 `faab2c8b…`). The Prithvi-EO-2.0 preprint (arXiv:2412.02732) is from December 2024; the previously recorded `2024-12` names the same publication."
 ---
 
 # Prithvi-EO-2.0-300M — Earth-Observation Embeddings (HLS Stacks, Masked Reconstruction & Bounded Linear Probe)
@@ -154,7 +154,7 @@ The model must not be used to direct evacuation, aid, insurance, damage assessme
 
 | Field | Status |
 |---|---|
-| **DIMER status** | **Planned / conditional** — the `.pt` asset-format and deserialization-trust review the fleet inventory requires is what this repository implements; the review's acceptance is Kurt's call |
+| **DIMER status** | **Planned / conditional** — the `.pt` asset-format and deserialization-trust review DIMER requires is what this repository implements; the review's acceptance is the maintainer's call |
 | Licence | Apache-2.0 (weights, the upstream Prithvi-EO-2.0 code, TerraTorch, and this repository's code) — use, modification, redistribution and commercial use permitted with the licence and notices preserved |
 | Weights | Would be redistributed converted, not unmodified: the served artifact is the deterministic safetensors derived from the pinned checkpoint, with both identities recorded (asset spec §11.2); this repository redistributes neither |
 | Remote code | **Not required** — no Hub-hosted module is imported; the model class comes from `terratorch==1.2.13` on PyPI |
