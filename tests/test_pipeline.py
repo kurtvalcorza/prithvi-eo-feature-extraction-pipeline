@@ -220,6 +220,28 @@ def test_reflectance_scaling_and_no_data(forbid_model_imports):
         validate_inputs({"id": "s", "image": image * 50_000.0})
 
 
+def test_scaling_is_idempotent_for_bright_chips(forbid_model_imports):
+    """Regression: a chip whose reflectance maximum lies just above 1.0 (a bright cloud or snow pixel) is scaled
+    exactly once. The former trigger (max > 1.0) rescaled such a checked chip a second time when predict, evaluate
+    or adapt re-checked it, collapsing it to ~1e-4 (Sen1Floods11 Paraguay_868895: raw max 10073)."""
+    image, label = synthetic_chip()
+    raw = (image * 10_000).astype(np.float32)
+    raw[0, 0, 0] = 10_073.0
+    once = pl.check_record({"id": "bright", "image": raw, "label": label})
+    assert float(once["image"].max()) == pytest.approx(1.0073, rel=1e-6)
+    np.testing.assert_array_equal(pl.check_record(once)["image"], once["image"])
+    rechecked = validate_dataset([once], min_records=1)["records"][0]  # the path predict / evaluate / adapt take
+    np.testing.assert_array_equal(rechecked["image"], once["image"])
+    # a reflectance chip with a pixel above 1.0 is not mistaken for reflectance x 10 000 on its first check either
+    bright = image.copy()
+    bright[0, 0, 0] = 1.3
+    np.testing.assert_array_equal(pl.check_record({"id": "r", "image": bright})["image"], bright)
+    assert pl.REFLECTANCE_MAX == 2.0
+    # embedding stacks share the rule: re-validating a validated stack leaves it unchanged
+    stack = validate_stacks([{"id": "b", "frames": np.stack([raw, raw], axis=1)}])["records"][0]
+    assert float(stack["frames"].max()) == pytest.approx(1.0073, rel=1e-6)
+    np.testing.assert_array_equal(validate_stacks([stack])["records"][0]["frames"], stack["frames"])
+
 def test_geotiff_round_trip(tmp_path, forbid_model_imports):
     import tifffile
 

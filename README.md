@@ -35,7 +35,7 @@ print(pipe.evaluate(splits["test"])["model"])                  # the probe, same
 pipe.save_artifact("outputs/probe")
 ```
 
-`embed()` and `reconstruct()` take records `{id, frames}` — a (6, T, H, W) reflectance stack with 1–4 dates and sides that are multiples of 16 in [64, 1024], or 1–4 GeoTIFF paths in chronological order (`read_stack` builds the array). `predict()`, `evaluate()` and `adapt()` take `{id, image, label}` — a (6, 512, 512) chip (or a GeoTIFF path; 13-band Sentinel-2 L1C files are reduced to the six HLS-equivalent bands) and a (512, 512) mask with 0 / 1 / −1, reduced to 32 × 32 patch labels by `patch_labels`. HLS scenes are already reflectance in [0, 1]; values above 1 are scaled by 10⁻⁴, no-data (0 or −9999) is replaced by 0, and validation is structural: nothing checks that the bands are the right six in the right order or that the reflectance is corrected.
+`embed()` and `reconstruct()` take records `{id, frames}` — a (6, T, H, W) reflectance stack with 1–4 dates and sides that are multiples of 16 in [64, 1024], or 1–4 GeoTIFF paths in chronological order (`read_stack` builds the array). `predict()`, `evaluate()` and `adapt()` take `{id, image, label}` — a (6, 512, 512) chip (or a GeoTIFF path; 13-band Sentinel-2 L1C files are reduced to the six HLS-equivalent bands) and a (512, 512) mask with 0 / 1 / −1, reduced to 32 × 32 patch labels by `patch_labels`. HLS scenes are already reflectance in [0, 1]; values above 2 are read as reflectance × 10 000 and scaled by 10⁻⁴ (once: a checked record is never rescaled), no-data (0 or −9999) is replaced by 0, and validation is structural: nothing checks that the bands are the right six in the right order or that the reflectance is corrected.
 
 ## Weights layout
 

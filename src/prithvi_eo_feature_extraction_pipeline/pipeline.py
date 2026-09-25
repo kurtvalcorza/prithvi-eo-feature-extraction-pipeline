@@ -96,6 +96,11 @@ MEANS: tuple[float, ...] = (1087.0, 1342.0, 1433.0, 2734.0, 1958.0, 1363.0)
 STDS: tuple[float, ...] = (2248.0, 2179.0, 2178.0, 1850.0, 1242.0, 1049.0)
 REFLECTANCE_SCALE = 10_000.0  # a chip in [0, 1] reflectance is multiplied by this before standardisation
 CONSTANT_SCALE = 1e-4  # applied only when a chip arrives as reflectance × 10 000; HLS scenes in [0, 1] are left alone
+# The plausible reflectance ceiling. A chip whose maximum exceeds it is read as reflectance × 10 000 and scaled by
+# CONSTANT_SCALE; every checked chip is then refused unless it lies within [-0.5, REFLECTANCE_MAX]. Scaling and
+# refusal share one threshold, so a checked record never triggers scaling again: re-checking it (as predict,
+# evaluate and adapt do) is a no-op. A lower trigger (the former 1.0) rescaled bright checked chips a second time.
+REFLECTANCE_MAX = 2.0
 NO_DATA_VALUES: tuple[float, ...] = (0.0, -9999.0)  # replaced by 0 before normalisation, as the upstream inference script
 NO_DATA_FLOAT = 0.0001  # what the upstream inference script writes into no-data pixels after normalisation
 IMAGE_SIZE = 512  # labelled chips (the probe's training contract)
@@ -344,7 +349,8 @@ INPUT_SCHEMA: dict[str, Any] = {
     "image_size": IMAGE_SIZE,
     "value_units": (
         "surface reflectance in [0, 1] (the HLS Burn Scars encoding, float32) or reflectance × 10 000; "
-        "values above 1 are scaled by 1e-4"
+        "values above 2 (REFLECTANCE_MAX) are read as reflectance × 10 000 and scaled by 1e-4; "
+        "re-checking a checked record never rescales it"
     ),
     "no_data": list(NO_DATA_VALUES),
     "classes": {str(i): name for i, name in enumerate(CLASS_NAMES)},
@@ -424,9 +430,9 @@ def _check_record(record: Any, index: int) -> dict[str, Any]:
         raise ValueError(f"{label_name}: image contains non-finite values")
     for value in NO_DATA_VALUES:
         array = np.where(array == value, 0.0, array)
-    if float(array.max()) > 1.0:
+    if float(array.max()) > REFLECTANCE_MAX:  # only reflectance × 10 000 exceeds the ceiling; see REFLECTANCE_MAX
         array = array * CONSTANT_SCALE
-    if float(array.min()) < -0.5 or float(array.max()) > 2.0:
+    if float(array.min()) < -0.5 or float(array.max()) > REFLECTANCE_MAX:
         span = (float(array.min()), float(array.max()))
         raise ValueError(f"{label_name}: reflectance outside the plausible range after scaling: {span}")
     item: dict[str, Any] = {"id": rid, "image": np.ascontiguousarray(array.astype(np.float32))}
@@ -592,9 +598,9 @@ def _check_stack(record: Any, index: int) -> dict[str, Any]:
         raise ValueError(f"{label_name}: frames contain non-finite values")
     for value in NO_DATA_VALUES:
         array = np.where(array == value, 0.0, array)
-    if float(array.max()) > 1.0:
+    if float(array.max()) > REFLECTANCE_MAX:  # only reflectance × 10 000 exceeds the ceiling; see REFLECTANCE_MAX
         array = array * CONSTANT_SCALE
-    if float(array.min()) < -0.5 or float(array.max()) > 2.0:
+    if float(array.min()) < -0.5 or float(array.max()) > REFLECTANCE_MAX:
         span = (float(array.min()), float(array.max()))
         raise ValueError(f"{label_name}: reflectance outside the plausible range after scaling: {span}")
     item: dict[str, Any] = {"id": rid, "frames": np.ascontiguousarray(array.astype(np.float32))}
