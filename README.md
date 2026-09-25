@@ -35,7 +35,7 @@ print(pipe.evaluate(splits["test"])["model"])                  # the probe, same
 pipe.save_artifact("outputs/probe")
 ```
 
-`embed()` and `reconstruct()` take records `{id, frames}` — a (6, T, H, W) reflectance stack with 1–4 dates and sides that are multiples of 16 in [64, 1024], or 1–4 GeoTIFF paths in chronological order (`read_stack` builds the array). `predict()`, `evaluate()` and `adapt()` take `{id, image, label}` — a (6, 512, 512) chip (or a GeoTIFF path; 13-band Sentinel-2 L1C files are reduced to the six HLS-equivalent bands) and a (512, 512) mask with 0 / 1 / −1, reduced to 32 × 32 patch labels by `patch_labels`. HLS scenes are already reflectance in [0, 1]; values above 1 are scaled by 10⁻⁴, no-data (0 or −9999) is replaced by 0, and validation is structural: nothing checks that the bands are the right six in the right order or that the reflectance is corrected.
+`embed()` and `reconstruct()` take records `{id, frames}` — a (6, T, H, W) reflectance stack with 1–4 dates and sides that are multiples of 16 in [64, 1024], or 1–4 GeoTIFF paths in chronological order (`read_stack` builds the array). `predict()`, `evaluate()` and `adapt()` take `{id, image, label}` — a (6, 512, 512) chip (or a GeoTIFF path; 13-band Sentinel-2 L1C files are reduced to the six HLS-equivalent bands) and a (512, 512) mask with 0 / 1 / −1, reduced to 32 × 32 patch labels by `patch_labels`. HLS scenes are already reflectance in [0, 1]; values above 2 are read as reflectance × 10 000 and scaled by 10⁻⁴ (once: a checked record is never rescaled), no-data (0 or −9999) is replaced by 0, and validation is structural: nothing checks that the bands are the right six in the right order or that the reflectance is corrected.
 
 ## Weights layout
 
@@ -72,7 +72,7 @@ Tests are offline: crafted pickles, temporary manifests, synthetic scenes and st
 
 ## Release status
 
-**Release-grade** — the `E2E` notebook blob `28e2298e` (committed at `81bebf7`) executed top-to-bottom in a clean Kaggle Tesla T4 runtime on 2026-09-20 (10/10 ok (1 restart after install cell), 392.9 s); the record is in `docs/release-verification.md` and `STATUS.md`. Static and unit checks — including the standalone generator parity checks — are necessary but were never the evidence; the hosted run is. A later change to the carried modules or the notebook returns the status to Candidate until re-verified.
+**Release-grade** — the `E2E` notebook blob `6a12fd2e` (committed at `e611e93`) executed top-to-bottom in a clean Kaggle Tesla T4 runtime on 2026-09-25 (10/10 ok (1 restart after install cell), 437.5 s); the record is in `docs/release-verification.md` and `STATUS.md`. Static and unit checks — including the standalone generator parity checks — are necessary but were never the evidence; the hosted run is. A later change to the carried modules or the notebook returns the status to Candidate until re-verified.
 
 ## Licensing
 
