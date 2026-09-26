@@ -126,6 +126,8 @@ By the end of this notebook you should be able to:
 This is an **Earth-observation and climate-impact applications** workshop. It does not perform meteorological forecasting or climate simulation. Flood segmentation does not forecast when floods will occur; burn-scar segmentation does not predict wildfire ignition; crop mapping does not predict yield. Earth-system forecasting with **Aurora** belongs in a separate workshop.
 
 All results produced here are **tutorial/sanity evidence** measured on small samples, not benchmark or operational-validation evidence.
+
+**AI Use Disclosure:** Generative AI assisted with this notebook’s code and instructional content under maintainer direction. The maintainer remains responsible for review, validation, and release decisions. AI-generated material may contain errors; validation claims are limited to documented runs and configurations. AI use does not imply independent verification, provider endorsement, or release approval.
 """)
 
 md("ec4ea156", r"""
