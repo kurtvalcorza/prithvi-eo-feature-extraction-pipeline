@@ -52,3 +52,71 @@ def test_reflectance_scaling_shares_the_pipelines_ceiling() -> None:
     body = _source()
     assert "if float(x.max()) > 2.0:" in body
     assert "if float(x.max()) > 1.0:" not in body
+
+
+def _kernel_cells() -> list[str]:
+    code = [c for c in _load()["cells"] if c["cell_type"] == "code"]
+    return ["".join(c["source"]) for c in code]
+
+
+def _bridge_namespace() -> dict:
+    """Execute the routing cell with routing disabled, which defines the bridge without touching IPython."""
+    import os
+
+    namespace = {"SKIP_INSTALL": True, "os": os, "sys": sys, "subprocess": subprocess}
+    exec(_kernel_cells()[1], namespace)
+    return namespace
+
+
+def test_no_runtime_restart_path() -> None:
+    body = _source()
+    assert "os.kill(" not in body
+    assert "choose Run all again; " not in body
+    install, bridge, verify = _kernel_cells()[:3]
+    assert "# dimer: kernel cell" in install and "# dimer: kernel cell" in bridge
+    assert "# dimer: kernel cell" not in verify
+    assert '"--python", str(EO_PYTHON), *PINS' in install
+    assert sum("# dimer: kernel cell" in cell for cell in _kernel_cells()) == 2
+
+
+def test_routing_skips_kernel_cells_and_blank_cells() -> None:
+    route = _bridge_namespace()["_route_to_isolated_runtime"]
+    assert route(["x = 1\n"]) == ["_DIMER_EO_RUNTIME.run('x = 1\\n')\n"]
+    assert route(["# dimer: kernel cell\n", "x = 1\n"]) == ["# dimer: kernel cell\n", "x = 1\n"]
+    assert route(["\n"]) == ["\n"]
+
+
+def test_isolated_runtime_round_trip() -> None:
+    namespace = _bridge_namespace()
+    shown = []
+    runtime = namespace["IsolatedRuntime"](sys.executable, display=lambda data, raw: shown.append(data))
+    try:
+        runtime.run("import numpy as np\nX = 41\nprint('hello')")
+        runtime.run("X += 1\ndisplay(X)\nnp.arange(3).sum()")
+        assert [d["text/plain"] for d in shown] == ["42", "np.int64(3)"]
+        try:
+            runtime.run("raise ValueError('boom')")
+        except namespace["IsolatedCellError"] as exc:
+            assert str(exc) == "ValueError: boom"
+        else:
+            raise AssertionError("a failing cell must raise in the kernel")
+        shown.clear()
+        runtime.run("display(X)")
+        assert [d["text/plain"] for d in shown] == ["42"]
+    finally:
+        runtime.close()
+
+
+def test_isolated_runtime_forwards_the_colab_upload(monkeypatch) -> None:
+    namespace = _bridge_namespace()
+    monkeypatch.setitem(sys.modules, "google.colab", object())  # the bridge only checks that the kernel is Colab
+    runtime = namespace["IsolatedRuntime"](sys.executable, display=lambda data, raw: None)
+    runtime._colab_upload = lambda: {"scene.tif": b"bytes"}
+    try:
+        runtime.run("from google.colab import files\nUPLOADED = files.upload()")
+        shown = []
+        runtime._display = lambda data, raw: shown.append(data)
+        runtime.run("display(UPLOADED)")
+        assert shown[0]["text/plain"] == "{'scene.tif': b'bytes'}"
+    finally:
+        runtime.close()

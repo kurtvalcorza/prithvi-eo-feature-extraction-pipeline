@@ -95,7 +95,7 @@ The canonical path executes locally in this notebook runtime. It does **not** cl
 
 The default path:
 
-1. installs a pinned runtime (see §1 for the one automatic restart hosted runtimes may need);
+1. installs the pinned runtime into an isolated Python environment and runs the rest of the notebook there (see §1), so a single **Run all** completes without a restart;
 2. downloads the four pinned model checkpoints, three unseen demonstration scenes, and small **labelled** test samples for flood, burn-scar and crop mapping, each verified by SHA-256;
 3. validates every input against its data contract before any model runs;
 4. runs four live DIMER model capabilities locally, one model on the GPU at a time;
@@ -150,21 +150,29 @@ Why the archives are streamed in full: the labelled burn-scar and crop chips are
 """)
 
 md("aa757eb6", r"""
-## 1. Install and verify the pinned runtime
+## 1. Install and verify the pinned runtime (isolated environment)
 
-Hosted runtimes (Colab, Kaggle) import some packages, such as NumPy, before the first cell runs. The pinned stack needs newer versions (TerraTorch 1.2.13 requires `numpy>=2.2`; PyTorch 2.14 requires `cuda-bindings>=13`), and Python cannot swap a module that is already loaded. When the install replaces an already-loaded package, this cell **restarts the Python runtime automatically**. When it reconnects, choose **Run all** once more: the pins are then satisfied, nothing is replaced, and the notebook runs through. A runtime that already has the pins installed runs straight through.
+Hosted runtimes (Colab, Kaggle) import some packages, such as NumPy, before the first cell runs. The pinned stack needs newer versions (TerraTorch 1.2.13 requires `numpy>=2.2`; PyTorch 2.14 requires `cuda-bindings>=13`), and Python cannot swap a module that is already loaded, so installing the pins into the notebook's own Python would leave mixed versions or need a restart.
 
-The environment variable `DIMER_NOTEBOOK_CI_PREINSTALLED=1` lets an executor that has already installed exactly these pins skip `pip`. It never selects data or models.
+This notebook therefore leaves the kernel's packages untouched:
+
+1. the first cell installs the exact pins into a separate environment (`dimer_eo_env/`, created with `uv` from the kernel's own Python);
+2. the second cell starts one Python process in that environment and routes **every later code cell** to it. Printed output, tables and figures come back to the notebook as usual, variables persist from cell to cell, and an error stops **Run all** exactly as it would in the kernel;
+3. the third cell, the first to run in the isolated environment, records the versions it actually imported.
+
+These first two cells are marked `# dimer: kernel cell` and are the only cells that run in the kernel. If you re-run a single cell later, it still runs in the isolated environment with the variables created so far. To start over, restart the session and choose **Run all**.
+
+The environment variable `DIMER_NOTEBOOK_CI_PREINSTALLED=1` lets an executor that has already installed exactly these pins run every cell in its own kernel instead. It never selects data or models.
 """)
 
 code("a349a890", r'''
-# @title Install the tested workshop runtime
-import importlib
-import importlib.metadata
+# @title Install the tested notebook runtime into an isolated environment
+# dimer: kernel cell (runs in the notebook kernel, not in the isolated environment)
 import os
-import platform
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 PINS = [
     "torch==2.14.0",
@@ -177,40 +185,285 @@ PINS = [
     "matplotlib>=3.9,<3.11",
     "pandas>=2.2,<3.0",
 ]
+UV_PIN = "uv==0.8.17"
 
 SKIP_INSTALL = os.environ.get("DIMER_NOTEBOOK_CI_PREINSTALLED") == "1"
+EO_ENV = Path(os.environ.get("DIMER_EO_ENV", "dimer_eo_env")).resolve()
+EO_PYTHON = EO_ENV / "bin" / "python"
+
+if SKIP_INSTALL:
+    print("DIMER_NOTEBOOK_CI_PREINSTALLED=1: the pins are already installed; the notebook runs in this kernel.")
+else:
+    uv = shutil.which("uv")
+    if uv is None:
+        # uv is a self-contained binary; installing it does not touch any package this kernel has imported.
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", UV_PIN], check=True)
+        from uv import find_uv_bin
+
+        uv = find_uv_bin()
+    if not EO_PYTHON.is_file():
+        subprocess.run([uv, "venv", "--quiet", "--python", sys.executable, str(EO_ENV)], check=True)
+    subprocess.run([uv, "pip", "install", "--quiet", "--python", str(EO_PYTHON), *PINS], check=True)
+    print({"isolated_environment": str(EO_ENV), "python": str(EO_PYTHON)})
+''')
+
+code("5d1c7e0a", r'''
+# @title Route the remaining cells to the isolated environment
+# dimer: kernel cell (runs in the notebook kernel, not in the isolated environment)
+import signal
+from multiprocessing.connection import Connection
+
+# The worker runs in the isolated environment. It executes each routed cell in one persistent namespace and sends
+# back printed text, displayed objects and matplotlib figures, so every cell behaves as it would in the kernel.
+_WORKER_SOURCE = r"""
+import ast, base64, builtins, io, linecache, os, signal, sys, traceback, types
+from multiprocessing.connection import Connection
+
+_send = Connection(int(sys.argv[1]), readable=False)
+_recv = Connection(int(sys.argv[2]), writable=False)
 
 
-def _installed_version(distribution):
+class _Stream(io.TextIOBase):
+    def __init__(self, name):
+        self._name = name
+
+    @property
+    def encoding(self):
+        return "utf-8"
+
+    def writable(self):
+        return True
+
+    def isatty(self):
+        return False
+
+    def write(self, text):
+        if text:
+            _send.send(("stream", self._name, str(text)))
+        return len(text)
+
+
+sys.stdout, sys.stderr = _Stream("stdout"), _Stream("stderr")
+
+
+def _figure_bundle(fig):
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", bbox_inches="tight")
+    return {"image/png": base64.b64encode(buffer.getvalue()).decode("ascii"), "text/plain": repr(fig)}
+
+
+def _flush_figures():
+    plt = sys.modules.get("matplotlib.pyplot")
+    if plt is None:
+        return
+    for number in plt.get_fignums():
+        _send.send(("display", _figure_bundle(plt.figure(number))))
+    plt.close("all")
+
+
+def _mimebundle(obj):
+    if hasattr(obj, "savefig"):
+        return _figure_bundle(obj)
+    data = {"text/plain": repr(obj)}
+    for method, mime in (("_repr_html_", "text/html"), ("_repr_markdown_", "text/markdown"), ("_repr_png_", "image/png")):
+        render = getattr(obj, method, None)
+        if callable(render):
+            try:
+                value = render()
+            except Exception:
+                value = None
+            if isinstance(value, bytes):
+                value = base64.b64encode(value).decode("ascii")
+            if value is not None:
+                data[mime] = value
+    return data
+
+
+def display(*objects, **kwargs):
+    for obj in objects:
+        _send.send(("display", _mimebundle(obj)))
+
+
+try:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot
+
+    matplotlib.pyplot.show = lambda *args, **kwargs: _flush_figures()
+except ImportError:
+    pass
+
+if os.environ.get("DIMER_KERNEL_IS_COLAB") == "1":
+    # google.colab only exists in the kernel; forward the BYOD upload dialog to it.
+    def _upload():
+        _send.send(("upload",))
+        reply = _recv.recv()
+        if reply[1] is None:
+            raise RuntimeError("The notebook kernel could not open the upload dialog.")
+        return reply[1]
+
     try:
-        return importlib.metadata.version(distribution)
-    except importlib.metadata.PackageNotFoundError:
-        return None
+        import google
+    except ImportError:
+        google = types.ModuleType("google")
+        google.__path__ = []
+        sys.modules["google"] = google
+    _colab = types.ModuleType("google.colab")
+    _files = types.ModuleType("google.colab.files")
+    _files.upload = _upload
+    _colab.files = _files
+    google.colab = _colab
+    sys.modules["google.colab"] = _colab
+    sys.modules["google.colab.files"] = _files
+
+_main = types.ModuleType("__main__")
+_main.__dict__.update(__builtins__=builtins, display=display)
+sys.modules["__main__"] = _main
+_count = 0
+while True:
+    # An interrupt only lands inside a running cell; between cells it is ignored.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        message = _recv.recv()
+    except EOFError:
+        break
+    if message[0] != "run":
+        continue
+    _count += 1
+    filename = f"<isolated cell {_count}>"
+    source = message[1]
+    linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
+    try:
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        tree = ast.parse(source, filename)
+        tail = ast.Expression(tree.body.pop().value) if tree.body and isinstance(tree.body[-1], ast.Expr) else None
+        exec(compile(tree, filename, "exec"), _main.__dict__)
+        if tail is not None:
+            value = eval(compile(tail, filename, "eval"), _main.__dict__)
+            if value is not None:
+                display(value)
+        _flush_figures()
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        _send.send(("done",))
+    except BaseException as exc:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        frames = exc.__traceback__.tb_next if exc.__traceback__ is not None else None
+        _send.send(("error", "".join(traceback.format_exception(type(exc), exc, frames)), f"{type(exc).__name__}: {exc}"))
+"""
 
 
-if not SKIP_INSTALL:
-    # Record every distribution this runtime has already imported, whatever its module name, so a pinned install
-    # that replaces a loaded package is detected instead of continuing with mixed versions.
-    _module_dists = importlib.metadata.packages_distributions()
-    _loaded = sorted({d for m in list(sys.modules) for d in _module_dists.get(m.partition(".")[0], ())})
-    _before = {d: _installed_version(d) for d in _loaded}
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", *PINS], check=True)
-    importlib.invalidate_caches()
-    _stale = [
-        f"{d}: loaded={v}, installed={_installed_version(d)}"
-        for d, v in _before.items()
-        if v is not None and _installed_version(d) != v
-    ]
-    if _stale:
-        print("The pinned install replaced packages this runtime had already imported:")
-        for line in _stale:
-            print("  -", line)
-        print(
-            "Restarting the Python runtime now. When it reconnects, choose Run all again; "
-            "the pins are then already satisfied and the notebook runs through without another restart."
+class IsolatedCellError(RuntimeError):
+    """A routed cell raised inside the isolated environment; its traceback is printed above."""
+
+
+class IsolatedRuntime:
+    """One persistent worker process in the isolated environment, fed one cell at a time."""
+
+    def __init__(self, python, display=None):
+        to_kernel_r, to_kernel_w = os.pipe()
+        to_worker_r, to_worker_w = os.pipe()
+        env = dict(os.environ, MPLBACKEND="Agg", PYTHONUNBUFFERED="1")
+        env["DIMER_KERNEL_IS_COLAB"] = "1" if "google.colab" in sys.modules else "0"
+        self.proc = subprocess.Popen(
+            [str(python), "-c", _WORKER_SOURCE, str(to_kernel_w), str(to_worker_r)],
+            pass_fds=(to_kernel_w, to_worker_r),
+            env=env,
+            start_new_session=True,  # interrupts reach the worker only through run(), exactly once
         )
-        sys.stdout.flush()
-        os.kill(os.getpid(), 9)
+        os.close(to_kernel_w)
+        os.close(to_worker_r)
+        self._recv = Connection(to_kernel_r, writable=False)
+        self._send = Connection(to_worker_w, readable=False)
+        if display is None:
+            from IPython.display import display
+        self._display = display
+
+    def _exited(self):
+        return RuntimeError(
+            f"The isolated environment's Python process exited (code {self.proc.wait()}); a crash of this kind is "
+            "usually running out of memory. Restart the session and choose Run all again."
+        )
+
+    def run(self, source):
+        try:
+            self._send.send(("run", source))
+        except OSError:
+            raise self._exited() from None
+        while True:
+            try:
+                message = self._recv.recv()
+            except EOFError:
+                raise self._exited() from None
+            except KeyboardInterrupt:
+                self.proc.send_signal(signal.SIGINT)
+                continue
+            kind = message[0]
+            if kind == "stream":
+                (sys.stdout if message[1] == "stdout" else sys.stderr).write(message[2])
+            elif kind == "display":
+                self._display(message[1], raw=True)
+            elif kind == "upload":
+                self._send.send(("upload", self._colab_upload()))
+            elif kind == "error":
+                sys.stderr.write(message[1])
+                raise IsolatedCellError(message[2]) from None
+            elif kind == "done":
+                return
+
+    @staticmethod
+    def _colab_upload():
+        try:
+            from google.colab import files
+        except ImportError:
+            return None
+        return files.upload()
+
+    def close(self):
+        self._send.close()
+        self.proc.wait(timeout=30)
+
+
+def _is_user_cell():
+    # ipykernel transforms a cell before executing it; its caller knows whether this is a silent frontend request.
+    frame = sys._getframe(2)
+    while frame is not None:
+        local = frame.f_locals
+        if "silent" in local and "store_history" in local:
+            return bool(local["store_history"]) and not bool(local["silent"])
+        frame = frame.f_back
+    return True
+
+
+def _route_to_isolated_runtime(lines):
+    source = "".join(lines)
+    if not source.strip() or "# dimer: kernel cell" in source or not _is_user_cell():
+        return lines
+    return [f"_DIMER_EO_RUNTIME.run({source!r})\n"]
+
+
+if SKIP_INSTALL:
+    print("Routing disabled: the notebook runs in this kernel.")
+else:
+    _ip = get_ipython()
+    _ip.input_transformers_cleanup[:] = [
+        t for t in _ip.input_transformers_cleanup if getattr(t, "__name__", "") != "_route_to_isolated_runtime"
+    ]
+    if isinstance(globals().get("_DIMER_EO_RUNTIME"), IsolatedRuntime):
+        _DIMER_EO_RUNTIME.close()
+    _DIMER_EO_RUNTIME = IsolatedRuntime(EO_PYTHON)
+    _ip.input_transformers_cleanup.append(_route_to_isolated_runtime)
+    print(f"Every later code cell now runs in {EO_PYTHON} (pid {_DIMER_EO_RUNTIME.proc.pid}).")
+''')
+
+code("8e2b4f61", r'''
+# @title Verify the tested runtime
+import importlib
+import importlib.metadata
+import os
+import platform
+import subprocess
+import sys
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -222,6 +475,8 @@ from huggingface_hub import hf_hub_download
 
 RUNTIME = {
     "python": platform.python_version(),
+    "python_executable": sys.executable,
+    "execution": "in-kernel (pins preinstalled)" if os.environ.get("DIMER_NOTEBOOK_CI_PREINSTALLED") == "1" else "isolated environment",
     "torch": torch.__version__,
     "torch_cuda": torch.version.cuda,
     "cudnn": torch.backends.cudnn.version() if torch.cuda.is_available() else None,
@@ -1748,7 +2003,7 @@ md("982c1134", r"""
 
 | Symptom | Likely cause | Corrective action |
 |---|---|---|
-| The runtime restarts after the install cell | the pinned install replaced a package the hosted runtime had already imported | expected once on Colab/Kaggle: choose **Run all** again; the second pass does not restart |
+| `The isolated environment's Python process exited` | the worker process in `dimer_eo_env/` crashed, usually out of host memory | restart the session and choose **Run all** again; the variables of the crashed process are gone |
 | CUDA is unavailable | CPU runtime selected | Change to a T4 GPU runtime before running from the top |
 | Size / SHA-256 mismatch on a checkpoint, scene or chip | interrupted or changed asset | delete the cached file (`workshop_cache/` or the Hugging Face cache) and rerun; do not bypass the integrity check |
 | Archive stream reports "retries exhausted" | the network dropped more than 20 times during one archive | rerun the acquisition cell on a steadier connection; the archive stream then starts from the beginning |
@@ -1793,7 +2048,7 @@ _GUIDED_INTRO = r"""
 
 **Who it is for.** Learners who can run Python cells in Colab/Jupyter and are new to Earth-observation machine learning. Basic familiarity with arrays and plots is sufficient; remote-sensing expertise is not required.
 
-**Runtime.** Use a fresh NVIDIA Tesla T4-class GPU runtime or the documented equivalent. This candidate currently installs a pinned stack that can trigger one automatic hosted-runtime restart; if that occurs, reconnect and choose **Run all** again. That restart behavior remains a release-readiness issue under the core notebook specification.
+**Runtime.** Use a fresh NVIDIA Tesla T4-class GPU runtime or the documented equivalent. The pinned stack is installed into an isolated environment, so a single **Run all** completes without a runtime restart.
 
 **How to run it.**
 1. Select the documented GPU runtime.
