@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "prithvi_eo_feature_extraction_pipeline"
 REPO_NAME = "prithvi-eo-feature-extraction-pipeline"
 NOTEBOOK_NAME = "prithvi_eo_feature_extraction_colab.ipynb"
+WORKSHOP_NOTEBOOK_NAME = "DIMER_AI_for_Earth_Observation_and_Climate_Applications_Workshop.ipynb"
 EXPECTED_PROFILE = "E2E"
 EXPECTED_MODEL_ID = "ibm-nasa-geospatial/Prithvi-EO-2.0-300M"
 PIPELINE_CLASS = "PrithviFeaturePipeline"
@@ -411,11 +412,28 @@ def validate_release_status() -> None:
     section = readme.split("## Release status", 1)[1]
     _check(section.lstrip().startswith(f"**{token}"), f"README.md release status must open with **{token}**")
     registry = _read(ROOT / "tutorials" / "README.md").replace("**", "")
-    _check(f"| {token}" in registry, f"tutorials/README.md must record the {token} status")
+    # The registry holds one table row per notebook. The primary notebook's row carries the repository's
+    # status; the supplemental workshop row carries its own, which may trail (Candidate while the primary
+    # notebook is Release-grade) but never lead it.
+    rows = {
+        name: next((line for line in registry.splitlines() if line.startswith(f"| `{name}`")), None)
+        for name in (NOTEBOOK_NAME, WORKSHOP_NOTEBOOK_NAME)
+    }
+    primary = rows[NOTEBOOK_NAME]
+    _check(primary is not None, f"tutorials/README.md must have a table row for {NOTEBOOK_NAME}")
+    _check(f"| {token}" in primary, f"tutorials/README.md must record the {token} status for {NOTEBOOK_NAME}")
     other = [t for t in STATUS_TOKENS if t != token]
-    for name, text in (("README.md", section.replace("**", "")), ("tutorials/README.md", registry)):
-        for stale in other:
-            _check(f"| {stale}" not in text, f"{name} carries a conflicting status token")
+    for stale in other:
+        _check(f"| {stale}" not in section.replace("**", ""), "README.md carries a conflicting status token")
+        _check(f"| {stale}" not in primary, f"tutorials/README.md gives {NOTEBOOK_NAME} a conflicting status token")
+    workshop = rows[WORKSHOP_NOTEBOOK_NAME]
+    _check(workshop is not None, f"tutorials/README.md must have a table row for {WORKSHOP_NOTEBOOK_NAME}")
+    workshop_tokens = [t for t in STATUS_TOKENS if f"| {t}" in workshop]
+    _check(len(workshop_tokens) == 1, f"tutorials/README.md must give {WORKSHOP_NOTEBOOK_NAME} exactly one status token")
+    _check(
+        not (token == "Candidate" and workshop_tokens == ["Release-grade"]),
+        f"{WORKSHOP_NOTEBOOK_NAME} cannot be Release-grade while the repository is Candidate",
+    )
     if token == "Candidate":
         _check(
             "docs/release-verification.md" in registry or "release-verification" in registry,
@@ -634,9 +652,13 @@ def _validate_notebook_content(
 def validate_notebooks() -> None:
     tutorials = ROOT / "tutorials"
     notebooks = sorted(tutorials.glob("*.ipynb"))
-    _check(len(notebooks) == 1, f"exactly one tutorial notebook is expected, found {len(notebooks)}")
-    path = notebooks[0]
-    _check(path.name == NOTEBOOK_NAME, f"tutorial notebook must be named {NOTEBOOK_NAME}, found {path.name}")
+    notebook_names = {path.name for path in notebooks}
+    expected_names = {NOTEBOOK_NAME, WORKSHOP_NOTEBOOK_NAME}
+    _check(
+        notebook_names == expected_names,
+        f"tutorial notebooks must be exactly {sorted(expected_names)}, found {sorted(notebook_names)}",
+    )
+    path = tutorials / NOTEBOOK_NAME
     build = _load_tool("build_notebook")
     notebook = json.loads(_read(path))
     code_cells, markdown = _validate_notebook_structure(path, notebook)
@@ -647,6 +669,7 @@ def validate_notebooks() -> None:
     _validate_notebook_content(path, code_cells, markdown, embedded)
     registry = _read(tutorials / "README.md")
     _check(f"`{path.name}`" in registry, f"{path.name} missing from tutorials/README.md")
+    _check(f"`{WORKSHOP_NOTEBOOK_NAME}`" in registry, f"{WORKSHOP_NOTEBOOK_NAME} missing from tutorials/README.md")
     _check(f"`{EXPECTED_PROFILE}`" in registry, f"tutorials/README.md must record `{EXPECTED_PROFILE}`")
     _check(
         f"DIMER Notebook Specification {NOTEBOOK_SPEC}" in registry,
