@@ -1786,7 +1786,139 @@ print(
 )
 ''')
 
+
+# Guided self-paced learning layer ---------------------------------------------------------------
+_GUIDED_INTRO = r"""
+## How to use this notebook
+
+**Who it is for.** Learners who can run Python cells in Colab/Jupyter and are new to Earth-observation machine learning. Basic familiarity with arrays and plots is sufficient; remote-sensing expertise is not required.
+
+**Runtime.** Use a fresh NVIDIA Tesla T4-class GPU runtime or the documented equivalent. This candidate currently installs a pinned stack that can trigger one automatic hosted-runtime restart; if that occurs, reconnect and choose **Run all** again. That restart behavior remains a release-readiness issue under the core notebook specification.
+
+**How to run it.**
+1. Select the documented GPU runtime.
+2. Choose **Run all** and keep the canonical defaults on your first pass.
+3. Read the explanatory markdown while the notebook executes.
+4. Sections marked **Infrastructure** handle installation, asset verification, model loading, or provenance. Run those cells as written; their implementation is not a learning objective.
+
+### Task at a glance
+
+`multispectral / multi-temporal Earth-observation data → foundation representation or task model → embedding / pixel map → evaluation and interpretation`
+
+### Roadmap
+
+1. Understand the spectral, spatial, and temporal input contracts.
+2. Inspect the built-in scenes and labelled evaluation chips.
+3. Establish naive task baselines.
+4. Run the foundation representation and the flood, burn-scar, and crop/land-cover capabilities.
+5. Compare maps with labels and inspect domain-shift mechanisms.
+6. Try one controlled reconstruction change.
+7. Write an evidence-based conclusion; optionally continue with BYOD.
+
+### What successful execution looks like
+
+You should finish with verified model/data identities, a foundation-model representation/reconstruction result, task metrics against naive baselines for the labelled samples, unseen-scene outputs, and exported predictions/provenance. These are tutorial sample measures, not operational or Philippines-specific validation results.
+"""
+
+_GUIDED_TRY = r"""
+## Try it yourself — one controlled change
+
+Use the masked-reconstruction capability because it gives you known truth for the deliberately hidden pixels.
+
+**Predict → change one variable → rerun → observe → explain**
+
+In the reconstruction cell, change only the mask ratio from the canonical `0.75` to `0.50`. Before rerunning, predict how the masked-pixel reconstruction error should change when the model is asked to reconstruct fewer hidden patches. Rerun only the reconstruction-related cells, compare the masked MSE, and explain whether the direction of change matches your expectation.
+
+Keep this exploratory result separate from the canonical `0.75` result recorded by the default **Run all** path.
+"""
+
+_GUIDED_CHECKPOINT = r"""
+## Self-paced checkpoint
+
+Before opening the sample interpretation, answer:
+
+1. How is an EO foundation representation different from a flood/burn/crop task output?
+2. Why are IoU/F1-style positive-class measures more informative than pixel accuracy when the positive class is sparse?
+3. Which sensor, place, season, resolution, or preprocessing changes could cause domain shift?
+4. What additional local evidence would you require before using these maps in the Philippines?
+
+<details>
+<summary><b>Show a sample interpretation</b></summary>
+
+The foundation model produces a reusable representation (and can be probed through masked reconstruction), while the task-specialized models produce semantic pixel maps. A high overall pixel accuracy can be misleading when most pixels are background, so class-aware overlap/precision/recall measures and naive baselines matter. None of the small labelled samples establishes Philippines performance; local sensor/preprocessing compatibility, geographically and seasonally representative labels, uncertainty analysis, and human review would be required.
+
+</details>
+"""
+
+_GUIDED_CONCLUSION = r"""
+## Write an evidence-based conclusion
+
+Use the outputs from your run.
+
+1. **State the question.** Which EO capability did you evaluate?
+2. **Report the primary result against its baseline.** Use masked reconstruction MSE for the reconstruction probe, positive-class IoU/F1 for binary maps, or mean IoU for crop/land-cover mapping as appropriate.
+3. **Add supporting evidence.** Mention a qualitative map pattern, precision/recall tradeoff, class behavior, or unseen-scene observation.
+4. **Name the domain-shift risks.** Sensor, band order, surface-reflectance processing, geography, season, spatial resolution, and label taxonomy can all matter.
+5. **State the limits.** These small samples demonstrate executable capability and tutorial-scale evaluation; they do not establish operational accuracy, climate attribution, or Philippines-specific performance.
+"""
+
+def _guided_text(cell):
+    src = cell.get("source", "")
+    return "".join(src) if isinstance(src, list) else src
+
+def _set_guided_text(cell, text):
+    cell["source"] = text
+
+def apply_guided_layer(items):
+    out = [dict(c) for c in items]
+    for cell in out:
+        text = _guided_text(cell)
+        if cell.get("cell_type") == "markdown":
+            if text.startswith("# DIMER "):
+                lines = text.splitlines()
+                lines[0] = "# DIMER Notebook: AI for Earth Observation and Climate Applications"
+                text = "\n".join(lines)
+            text = (
+                text.replace("This standalone workshop", "This standalone notebook")
+                    .replace("This workshop", "This notebook")
+                    .replace("this workshop", "this notebook")
+                    .replace("The workshop", "The notebook")
+                    .replace("the workshop", "the notebook")
+                    .replace("## 2. Workshop controls", "## 2. Notebook controls")
+            )
+            first = text.splitlines()[0] if text.splitlines() else ""
+            if any(k in first.lower() for k in ("runtime", "model and sample identities", "model identities", "provenance", "install")) and "**Infrastructure.**" not in text:
+                text += "\n\n> **Infrastructure.** This section supports reproducibility and execution. Run the associated setup code as written; understanding its implementation is not a learning objective for this notebook."
+            _set_guided_text(cell, text)
+        elif cell.get("cell_type") == "code":
+            text = (
+                text.replace("# @title Install the tested workshop runtime", "# @title Install the tested notebook runtime")
+                    .replace("# @title Workshop controls", "# @title Notebook controls")
+                    .replace("Canonical workshop path complete.", "Canonical notebook path complete.")
+            )
+            _set_guided_text(cell, text)
+
+    if not any("## How to use this notebook" in _guided_text(c) for c in out):
+        out.insert(1, {"cell_type":"markdown","id":"guided-how-to-use","metadata":{},"source":_GUIDED_INTRO.strip("\n")})
+
+    insert_at = next(
+        (i for i,c in enumerate(out) if c.get("cell_type")=="markdown" and _guided_text(c).lstrip().startswith("# 16. Troubleshooting")),
+        len(out)
+    )
+    joined = "\n".join(_guided_text(c) for c in out if c.get("cell_type")=="markdown")
+    guided = []
+    if "## Try it yourself — one controlled change" not in joined:
+        guided.append({"cell_type":"markdown","id":"guided-controlled-change","metadata":{},"source":_GUIDED_TRY.strip("\n")})
+    if "## Self-paced checkpoint" not in joined:
+        guided.append({"cell_type":"markdown","id":"guided-self-check","metadata":{},"source":_GUIDED_CHECKPOINT.strip("\n")})
+    if "## Write an evidence-based conclusion" not in joined:
+        guided.append({"cell_type":"markdown","id":"guided-conclusion","metadata":{},"source":_GUIDED_CONCLUSION.strip("\n")})
+    out[insert_at:insert_at] = guided
+    return out
+
+
 # ------------------------------------------------------------------------------------------------------------------
+cells = apply_guided_layer(cells)
 nb = dict(orig)
 nb["cells"] = cells
 nb["metadata"] = dict(orig["metadata"])
