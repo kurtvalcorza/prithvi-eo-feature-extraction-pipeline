@@ -1885,6 +1885,13 @@ def apply_guided_layer(items):
                     .replace("The workshop", "The notebook")
                     .replace("the workshop", "the notebook")
                     .replace("## 2. Workshop controls", "## 2. Notebook controls")
+                    .replace("Candidate workshop carrier", "Candidate notebook carrier")
+                    .replace("applications** workshop.", "applications** notebook.")
+                    .replace("belongs in a separate workshop.", "belongs in a separate notebook.")
+                    .replace("**Workshop prediction:**", "**Prediction:**")
+                    .replace("# 14. Workshop exercises and transfer prompts", "# 14. Exercises and transfer prompts")
+                    .replace("The workshop does not", "The notebook does not")
+                    .replace("the workshop treats", "the notebook treats")
             )
             first = text.splitlines()[0] if text.splitlines() else ""
             if any(k in first.lower() for k in ("runtime", "model and sample identities", "model identities", "provenance", "install")) and "**Infrastructure.**" not in text:
@@ -1895,6 +1902,7 @@ def apply_guided_layer(items):
                 text.replace("# @title Install the tested workshop runtime", "# @title Install the tested notebook runtime")
                     .replace("# @title Workshop controls", "# @title Notebook controls")
                     .replace("Canonical workshop path complete.", "Canonical notebook path complete.")
+                    .replace("supported workshop runtime", "supported notebook runtime")
             )
             _set_guided_text(cell, text)
 
