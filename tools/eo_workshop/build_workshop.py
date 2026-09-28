@@ -579,7 +579,10 @@ import uuid
 from pathlib import Path
 
 # One identity per session. Every file this run writes is registered under it (§4), and only those files are packaged.
-RUN_ID = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
+# Re-running this cell (for example to switch on BYOD) keeps the session's RUN_ID.
+RUN_ID = globals().get("RUN_ID") or (
+    datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
+)
 
 OUTPUT_ROOT = Path(OUTPUT_DIR)
 for sub in ("figures", "predictions", "embeddings", "metrics", "provenance"):

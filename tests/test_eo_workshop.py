@@ -296,3 +296,8 @@ def test_reconstruction_activity_is_separate_from_the_canonical_result() -> None
 def test_report_packages_only_this_runs_files() -> None:
     export = _cell("33f19388")
     assert "make_archive" not in export and "PRODUCED_FILES" in export and "RUN_ID" in export
+
+
+def test_run_id_survives_rerunning_the_controls_cell() -> None:
+    controls = _cell("ba798aab")
+    assert 'RUN_ID = globals().get("RUN_ID") or (' in controls
