@@ -1722,7 +1722,7 @@ plt.tight_layout()
 save_figure(OUTPUT_ROOT / "figures" / "foundation_representation.png", dpi=150, bbox_inches="tight")
 plt.show()
 
-print(pd.DataFrame(similarity, index=date_labels, columns=date_labels).round(3))
+print(pd.DataFrame(similarity, index=date_labels, columns=date_labels).round(3).to_string())
 print({
     "embedding_dim": int(scene_mean.shape[0]),
     "token_semantics": "final normalised encoder layer; CLS token and mean over all patch tokens",
