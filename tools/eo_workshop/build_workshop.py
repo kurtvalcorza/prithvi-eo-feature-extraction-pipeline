@@ -60,6 +60,41 @@ CROP_LOADER = r'''def load_crop_model():
 '''
 
 
+CROP_NORMALISE = r'''def crop_normalise(scene_dn):
+    """(18, 224, 224) HLS digital numbers returned by validate_crop_scene -> standardised (1, 6, 3, 224, 224). The
+    units are declared as digital numbers, so already-converted data is never rescaled."""
+    x = validate_crop_scene(scene_dn, name="crop model input", units="dn", log=False).reshape(1,18,224,224)
+    mean = np.asarray(CROP_MEANS * 3, dtype=np.float32)[None,:,None,None]
+    std = np.asarray(CROP_STDS * 3, dtype=np.float32)[None,:,None,None]
+    flat = (x - mean) / std
+    # Reproduce the historical training layout exactly.
+    return np.ascontiguousarray(flat.reshape(1,6,3,224,224))
+
+'''
+
+CROP_PREDICT = r'''def predict_crop(model, scene_dn):
+    """(18, 224, 224) validated HLS digital numbers -> class map (224, 224) uint8, softmax scores (13, 224, 224) and
+    class fractions. The class scores are checked (shape, finite values, probabilities, label domain) before any map
+    is formed: an invalid output raises InvalidModelOutput."""
+    x = torch.from_numpy(crop_normalise(scene_dn)).to(DEVICE)
+    with torch.inference_mode(), torch.autocast(
+        device_type=DEVICE.split(":")[0],
+        dtype=torch.float16,
+        enabled=DEVICE.startswith("cuda")
+    ):
+        logits = model(x)
+    logits = logits.float()
+    n_classes = len(CROP_CLASS_NAMES)
+    check_class_scores(logits, name="crop model output", batch=1, num_classes=n_classes, spatial=(224, 224))
+    prob = torch.softmax(logits, dim=1)
+    check_probabilities(prob, name="crop model output")
+    scores = prob[0].cpu().numpy()
+    mask = scores.argmax(axis=0).astype(np.uint8)
+    check_class_map(mask, name="crop model output", num_classes=n_classes)
+    fractions = {CROP_CLASS_NAMES[i]: float((mask == i).mean()) for i in range(n_classes)}
+    return mask, scores, fractions'''
+
+
 def md(cid, text):
     cells.append({"cell_type": "markdown", "id": cid, "metadata": {}, "source": text.strip("\n")})
 
@@ -501,7 +536,15 @@ if not torch.cuda.is_available():
     print("WARNING: no CUDA device. The supported workshop runtime is a T4-class GPU; CPU execution is slow.")
 ''')
 
-md("e94081be", "## 2. Workshop controls")
+md("e94081be", r"""
+## 2. Workshop controls
+
+Keep the defaults on your first pass.
+
+- `RUN_RECONSTRUCTION`, `RUN_FLOOD_MAPPING`, `RUN_BURNSCAR_MAPPING` and `RUN_CROP_MAPPING` skip a capability's checkpoint download and inference. They do **not** reduce data acquisition: §5 still downloads and validates every evaluation set, including the two streamed archives, so these switches are not a low-download mode.
+- `USE_BYOD`, `BYOD_CAPABILITY`, `BYOD_PATH` and `BYOD_UNITS` configure the optional §12 inference on your own file. With `BYOD_UNITS = "auto"` the notebook decides once, from the valid (non-no-data) pixels, whether the file holds reflectance or HLS digital numbers, and stops with an error when the values are ambiguous; choose `"reflectance"` or `"dn"` to declare the units instead.
+- `OUTPUT_DIR` receives this run's files. Each session gets a `RUN_ID`; the report bundle contains only the files this run wrote. Files left by earlier runs are listed in the manifest but never deleted or packaged.
+""")
 
 code("ba798aab", r'''
 # @title Workshop controls
@@ -513,6 +556,7 @@ RUN_CROP_MAPPING = True     # @param {type:"boolean"}
 USE_BYOD = False            # @param {type:"boolean"}
 BYOD_CAPABILITY = "burnscar" # @param ["embedding", "flood", "burnscar", "crop"]
 BYOD_PATH = ""              # @param {type:"string"}
+BYOD_UNITS = "auto"         # @param ["auto", "reflectance", "dn"]
 OUTPUT_DIR = "outputs"      # @param {type:"string"}
 
 SEED = 42
@@ -530,7 +574,15 @@ PRECISION = {
     "crop": "float16 autocast" if USE_AMP else "float32",
 }
 
+import datetime
+import uuid
 from pathlib import Path
+
+# One identity per session. Every file this run writes is registered under it (§4), and only those files are packaged.
+# Re-running this cell (for example to switch on BYOD) keeps the session's RUN_ID.
+RUN_ID = globals().get("RUN_ID") or (
+    datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
+)
 
 OUTPUT_ROOT = Path(OUTPUT_DIR)
 for sub in ("figures", "predictions", "embeddings", "metrics", "provenance"):
@@ -538,7 +590,7 @@ for sub in ("figures", "predictions", "embeddings", "metrics", "provenance"):
 CACHE_ROOT = Path("workshop_cache")
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
-print({"device": DEVICE, "precision": PRECISION, "output_root": str(OUTPUT_ROOT.resolve()), "seed": SEED})
+print({"run_id": RUN_ID, "device": DEVICE, "precision": PRECISION, "output_root": str(OUTPUT_ROOT.resolve()), "seed": SEED})
 ''')
 
 md("ebf78f3b", r"""
@@ -698,7 +750,9 @@ import hashlib
 import http.client
 import io
 import json
+import os
 import pickletools
+import shutil
 import tarfile
 import time
 import urllib.request
@@ -707,10 +761,33 @@ import zipfile
 from collections.abc import Mapping
 
 PREPROCESSING_LOG = []  # every band selection or unit conversion applied to an input (reported and exported)
+UNIT_DECISIONS = {}     # input -> the unit decision made ONCE for it (declared, or inferred from valid pixels)
+ARCHIVE_STATUS = {}     # evaluation archive -> whole-archive verification status of the cached members in use
+PRODUCED_FILES = {}     # resolved path -> role ("canonical", "activity", "byod"): the files THIS run wrote
 
 
 def note(name, change):
     PREPROCESSING_LOG.append({"input": name, "change": change})
+
+
+def register_output(path, role="canonical"):
+    """Record that this run wrote `path`. The report bundle packages registered files only."""
+    PRODUCED_FILES[str(Path(path).resolve())] = role
+    return Path(path)
+
+
+def save_npz(path, role="canonical", **arrays):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, **arrays)
+    return register_output(path, role)
+
+
+def save_figure(path, role="canonical", **kwargs):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(path, **kwargs)
+    return register_output(path, role)
 
 
 def report_preprocessing(since=0):
@@ -809,15 +886,38 @@ class _ResumableReader:
             self.response.close()
 
 
-def stream_pinned_members(url, archive_bytes, archive_sha256, wanted, cache_dir):
-    """Stream a .tar.gz once, keep only the pinned members (each verified by size and SHA-256), write them under
-    `cache_dir` by basename, and verify the whole archive's size and SHA-256 when the stream ends. Member paths are
-    never used as filesystem paths, so the archive cannot write outside `cache_dir`."""
+def stream_pinned_members(url, archive_bytes, archive_sha256, wanted, cache_dir, *, label=None):
+    """Stream a .tar.gz once, keep only the pinned members (each verified by size and SHA-256), and verify the whole
+    archive's size and SHA-256 when the stream ends. Members are staged, and published under `cache_dir` (by basename)
+    only after the whole-archive check has passed; a receipt of that check is written beside them. The cache is reused
+    only when every member matches its pin AND the receipt records the same verified archive, so a failed archive
+    check is never turned into apparent success on a retry. Member paths are never used as filesystem paths, so the
+    archive cannot write outside `cache_dir`."""
+    label = label or url
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     out = {member: cache_dir / Path(member).name for member in wanted}
-    if all(p.is_file() and p.stat().st_size == wanted[m][0] and sha256_file(p) == wanted[m][1] for m, p in out.items()):
+    pinned = {m: wanted[m][1] for m in sorted(wanted)}
+    receipt_path = cache_dir / "archive_verification.json"
+    receipt = None
+    if receipt_path.is_file():
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except ValueError:
+            receipt = None
+    members_ok = all(p.is_file() and p.stat().st_size == wanted[m][0] and sha256_file(p) == wanted[m][1] for m, p in out.items())
+    if (
+        members_ok and isinstance(receipt, dict) and receipt.get("whole_archive_verified") is True
+        and receipt.get("archive_bytes") == archive_bytes and receipt.get("archive_sha256") == archive_sha256
+        and receipt.get("members") == pinned
+    ):
+        ARCHIVE_STATUS[label] = {**receipt, "source": "cache: verification receipt matched and every member re-hashed"}
         return out
+    receipt_path.unlink(missing_ok=True)  # this attempt supersedes any earlier status
+    staging = cache_dir / ".staging"
+    shutil.rmtree(staging, ignore_errors=True)  # the notebook's own staging directory inside its cache, nothing else
+    staging.mkdir()
+    ARCHIVE_STATUS[label] = {"url": url, "whole_archive_verified": False, "source": "stream started"}
     started = time.time()
     reader = _ResumableReader(url, archive_bytes)
     try:
@@ -833,20 +933,30 @@ def stream_pinned_members(url, archive_bytes, archive_sha256, wanted, cache_dir)
                 size, digest = wanted[name]
                 if len(data) != size or sha256_bytes(data) != digest:
                     raise ValueError(f"{name}: member {len(data)} bytes / {sha256_bytes(data)[:16]}… != pinned {size} / {digest[:16]}…")
-                out[name].write_bytes(data)
+                (staging / out[name].name).write_bytes(data)
                 found.add(name)
         while reader.read(1 << 20):  # drain the remainder so the whole-archive digest can be checked
             pass
     finally:
         reader.close()
     if reader.count != archive_bytes or reader.sha.hexdigest() != archive_sha256:
+        ARCHIVE_STATUS[label]["source"] = "whole-archive check FAILED; staged members were not published"
         raise ValueError(f"{url}: streamed {reader.count} bytes / {reader.sha.hexdigest()[:16]}…, pinned {archive_bytes} / {archive_sha256[:16]}…")
     missing = sorted(set(wanted) - found)
     if missing:
+        ARCHIVE_STATUS[label]["source"] = "pinned members missing; staged members were not published"
         raise ValueError(f"archive is missing pinned members: {missing[:3]}…")
+    for name in found:
+        os.replace(staging / out[name].name, out[name])
+    shutil.rmtree(staging, ignore_errors=True)
+    receipt = {
+        "url": url, "archive_bytes": archive_bytes, "archive_sha256": archive_sha256, "whole_archive_verified": True,
+        "verified_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "members": pinned,
+    }
+    receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+    ARCHIVE_STATUS[label] = {**receipt, "source": "streamed and verified in this run"}
     print(f"streamed {reader.count / 2**30:.2f} GiB in {time.time() - started:.0f} s ({reader.resumes} resumed connection(s)); kept {len(found)} verified members")
     return out
-
 
 # ---- rasters and validation --------------------------------------------------------------------------------------
 def load_tiff(path):
@@ -857,6 +967,56 @@ def load_tiff(path):
     if arr.ndim == 3 and planar is not None and int(planar) == 1 and arr.shape[-1] <= 32:
         arr = np.moveaxis(arr, -1, 0)
     return np.asarray(arr)
+
+
+NODATA = -9999
+REFLECTANCE_CEILING = 1.5  # foundation / crop: a valid maximum at or below this is reflectance in [0, 1]
+DN_FLOOR = 100.0           # ... at or above this, HLS digital numbers; a maximum in between is ambiguous and rejected
+
+
+def to_digital_numbers(x, *, name, units="auto", log=True):
+    """Return HLS digital numbers (reflectance × 10 000), keeping -9999 no-data pixels at -9999.
+
+    The units are decided ONCE, from valid pixels only (not -9999): `units="reflectance"` or `"dn"` declares them;
+    `"auto"` reads a valid maximum ≤ 1.5 as reflectance and ≥ 100 as digital numbers, and rejects anything in between
+    as ambiguous. Data already returned by a validator is passed with `units="dn"`, so it is never scaled twice."""
+    x = np.asarray(x, dtype=np.float32)
+    valid = x != NODATA
+    if not valid.any():
+        raise ValueError(f"{name}: every pixel is no-data ({NODATA}); there is nothing to process")
+    lo, hi = float(x[valid].min()), float(x[valid].max())
+    if units == "auto":
+        if hi <= REFLECTANCE_CEILING:
+            source = "reflectance"
+        elif hi >= DN_FLOOR:
+            source = "dn"
+        else:
+            raise ValueError(
+                f"{name}: valid values {lo:.4g}..{hi:.4g} are ambiguous between reflectance and HLS digital numbers; "
+                "declare the units (BYOD_UNITS = 'reflectance' or 'dn')"
+            )
+        decision = "inferred from valid pixels"
+    elif units in ("reflectance", "dn"):
+        source, decision = units, "declared"
+    else:
+        raise ValueError(f"{name}: units must be 'auto', 'reflectance' or 'dn'; got {units!r}")
+    if source == "reflectance":
+        x = np.where(valid, x * 10_000.0, x).astype(np.float32)
+    if log:
+        if source == "reflectance":
+            note(name, "reflectance converted to HLS digital numbers (× 10 000); no-data pixels kept")
+        UNIT_DECISIONS[name] = {
+            "source_units": source, "decision": decision, "valid_min": lo, "valid_max": hi,
+            "nodata_pixels": int((~valid).sum()), "model_units": "HLS digital numbers",
+        }
+    return x
+
+
+def _check_dn_range(x, *, name):
+    valid = x != NODATA
+    lo, hi = float(x[valid].min()), float(x[valid].max())
+    if lo < -2_000 or hi > 20_000:
+        raise ValueError(f"{name}: digital numbers {lo:.0f}..{hi:.0f} outside the plausible HLS range; check units and band order")
 
 
 def validate_six_band_scene(array, *, name="scene", exact_size=None, multiple_of=None):
@@ -872,27 +1032,54 @@ def validate_six_band_scene(array, *, name="scene", exact_size=None, multiple_of
     return np.ascontiguousarray(x.astype(np.float32))
 
 
-def validate_segmentation_chip(raw, *, name):
+def validate_foundation_scene(array, *, name="scene", units="auto", log=True):
+    """Foundation input contract: six HLS-order bands, height and width multiples of 16, finite. Returns HLS digital
+    numbers with -9999 no-data kept (the foundation normaliser maps it to the upstream fill value)."""
+    x = validate_six_band_scene(array, name=name, multiple_of=16)
+    x = to_digital_numbers(x, name=name, units=units, log=log)
+    _check_dn_range(x, name=name)
+    return np.ascontiguousarray(x)
+
+
+def validate_segmentation_chip(raw, *, name, units="auto"):
     """Flood / burn-scar input contract: six HLS-order bands (or a 13-band Sentinel-2 L1C stack, reduced to them),
-    exactly 512×512, finite; no-data (0, -9999) -> 0; reflectance x 10 000 -> reflectance. Returns (6, 512, 512)."""
+    exactly 512×512, finite; no-data (0, -9999) -> 0; reflectance × 10 000 -> reflectance ("auto" reads a maximum
+    above 2 as × 10 000, as the pipelines' REFLECTANCE_MAX). Returns (6, 512, 512) reflectance. Idempotent."""
     x = np.asarray(raw)
     if x.ndim == 3 and x.shape[0] == 13:
         x = x[list(S2_L1C_BAND_INDICES)]
         note(name, f"13-band Sentinel-2 L1C stack reduced to bands {list(S2_L1C_BAND_INDICES)} (B2, B3, B4, B8A, B11, B12)")
     x = validate_six_band_scene(x, name=name, exact_size=512)
-    nodata = (x == 0) | (x == -9999)
+    nodata = (x == 0) | (x == NODATA)
+    if nodata.all():
+        raise ValueError(f"{name}: every pixel is no-data (0 or {NODATA}); there is nothing to map")
     if nodata.any():
         x = np.where(nodata, 0.0, x).astype(np.float32)
-    if float(x.max()) > 2.0:  # the plausible reflectance ceiling, as the pipelines' REFLECTANCE_MAX
+    if units == "auto":
+        scale = False
+        if float(x.max()) > 2.0:  # the plausible reflectance ceiling, as the pipelines' REFLECTANCE_MAX
+            scale = True
+        decision = "inferred from valid pixels"
+    elif units in ("reflectance", "dn"):
+        scale, decision = units == "dn", "declared"
+    else:
+        raise ValueError(f"{name}: units must be 'auto', 'reflectance' or 'dn'; got {units!r}")
+    UNIT_DECISIONS[name] = {
+        "source_units": "dn" if scale else "reflectance", "decision": decision,
+        "nodata_pixels": int(nodata.sum()), "model_units": "reflectance",
+    }
+    if scale:
         x = x * 1e-4
-        note(name, "values above 2 read as reflectance × 10 000 and scaled by 1e-4")
+        note(name, "values above 2 read as reflectance × 10 000 and scaled by 1e-4" if units == "auto" else "declared HLS digital numbers scaled by 1e-4")
     if float(x.min()) < -0.5 or float(x.max()) > 2.0:
         raise ValueError(f"{name}: reflectance {float(x.min()):.3f}..{float(x.max()):.3f} is outside the plausible range after scaling; check units and band order")
     return np.ascontiguousarray(x)
 
 
-def validate_crop_scene(array, *, name="crop scene"):
-    """Crop input contract: 18 date-major bands (3 dates × 6 HLS bands), 224×224, HLS digital numbers."""
+def validate_crop_scene(array, *, name="crop scene", units="auto", log=True):
+    """Crop input contract: 18 date-major bands (3 dates × 6 HLS bands), 224×224, finite, no -9999 no-data. Returns
+    HLS digital numbers. Units are decided once (`to_digital_numbers`); data already returned by this function is
+    passed again with units="dn", so it is never rescaled."""
     x = np.asarray(array)
     if x.ndim != 3 or x.shape[0] != 18:
         raise ValueError(f"{name}: crop mapping requires exactly three acquisition dates × six bands = 18 bands; got shape {x.shape}")
@@ -900,13 +1087,29 @@ def validate_crop_scene(array, *, name="crop scene"):
         raise ValueError(f"{name}: expected 224×224 pixels, got {x.shape[-2]}×{x.shape[-1]}; the workshop does not resize inputs")
     if not np.isfinite(x).all():
         raise ValueError(f"{name}: contains non-finite values")
-    x = x.astype(np.float32)
-    if float(x.min()) >= 0.0 and float(x.max()) <= 1.5:
-        x = x * 10_000.0
-        note(name, "reflectance in [0, 1] converted to HLS digital numbers (× 10 000)")
-    if float(x.min()) < -2_000 or float(x.max()) > 20_000:
-        raise ValueError(f"{name}: digital numbers {float(x.min()):.0f}..{float(x.max()):.0f} outside the plausible HLS range")
+    x = to_digital_numbers(x, name=name, units=units, log=log)
+    n_nodata = int((x == NODATA).sum())
+    if n_nodata:
+        raise ValueError(
+            f"{name}: {n_nodata} values are the {NODATA} no-data fill; the crop checkpoint has no documented no-data "
+            "handling, so fill or crop those pixels out before inference"
+        )
+    _check_dn_range(x, name=name)
     return np.ascontiguousarray(x)
+
+
+def require_integer_labels(mask, *, name):
+    """Labels must be finite whole numbers; fractional values are rejected instead of truncated."""
+    m = np.asarray(mask)
+    if m.dtype.kind == "f":
+        if not np.isfinite(m).all():
+            raise ValueError(f"{name}: label contains non-finite values")
+        fractional = m != np.round(m)
+        if fractional.any():
+            raise ValueError(f"{name}: label values must be whole numbers; found {np.unique(m[fractional])[:5].tolist()}")
+    elif m.dtype.kind not in "iub":
+        raise ValueError(f"{name}: unsupported label dtype {m.dtype}")
+    return m.astype(np.int64)
 
 
 def validate_label(mask, *, name, shape, num_classes):
@@ -915,15 +1118,67 @@ def validate_label(mask, *, name, shape, num_classes):
         m = m[0]
     if m.shape != shape:
         raise ValueError(f"{name}: label dimensions {m.shape} do not match the image dimensions {shape}")
-    values = set(np.unique(m).astype(int).tolist())
+    m = require_integer_labels(m, name=name)
+    values = set(np.unique(m).tolist())
     allowed = set(range(num_classes)) | {IGNORE_INDEX}
     if not values <= allowed:
         raise ValueError(f"{name}: label values {sorted(values - allowed)} outside {sorted(allowed)}")
-    return np.ascontiguousarray(m.astype(np.int64))
+    return np.ascontiguousarray(m)
 
+
+# ---- model outputs -----------------------------------------------------------------------------------------------
+class InvalidModelOutput(RuntimeError):
+    """A model returned output that cannot be turned into a valid map, metric, embedding or export."""
+
+
+def _host_array(values):
+    return values.detach().float().cpu().numpy() if hasattr(values, "detach") else np.asarray(values, dtype=np.float32)
+
+
+def check_class_scores(logits, *, name, batch, num_classes, spatial):
+    """Output contract before softmax/argmax: finite class scores of shape (batch, num_classes, H, W)."""
+    shape, expected = tuple(int(n) for n in logits.shape), (int(batch), int(num_classes), *(int(n) for n in spatial))
+    if shape != expected:
+        raise InvalidModelOutput(f"{name}: expected class scores of shape {expected}, got {shape}")
+    bad = int((~np.isfinite(_host_array(logits))).sum())
+    if bad:
+        raise InvalidModelOutput(
+            f"{name}: {bad} of {int(np.prod(shape))} class scores are NaN or infinite, so no map, metric or export is "
+            "produced from them. Rerun the capability in a fresh runtime; if it persists, report the input and runtime."
+        )
+
+
+def check_probabilities(prob, *, name, atol=1e-3):
+    p = _host_array(prob)
+    if not np.isfinite(p).all() or float(np.abs(p.sum(axis=1) - 1.0).max()) > atol:
+        raise InvalidModelOutput(f"{name}: class probabilities are non-finite or do not sum to 1")
+
+
+def check_class_map(mask, *, name, num_classes):
+    m = np.asarray(mask)
+    if m.size and (int(m.min()) < 0 or int(m.max()) >= num_classes):
+        raise InvalidModelOutput(f"{name}: class map values {int(m.min())}..{int(m.max())} outside 0..{num_classes - 1}")
+
+
+def check_embedding(vector, *, name, dim):
+    v = _host_array(vector)
+    if v.shape != (dim,) or not np.isfinite(v).all() or not float(np.linalg.norm(v)) > 0.0:
+        raise InvalidModelOutput(f"{name}: expected {dim} finite values with a non-zero norm; got shape {v.shape}")
 
 # ---- visualization -----------------------------------------------------------------------------------------------
-def percentile_rgb(chw, rgb_indices=(2, 1, 0), p_low=2, p_high=98):
+def rgb_limits(chws, rgb_indices=(2, 1, 0), p_low=2, p_high=98):
+    """Per-channel display limits shared by several (bands, H, W) images, from valid pixels (finite, not -9999)."""
+    limits = []
+    for band in rgb_indices:
+        values = np.concatenate([np.asarray(c, dtype=np.float32)[band].ravel() for c in chws])
+        values = values[np.isfinite(values) & (values != NODATA)]
+        lo, hi = (float(v) for v in np.percentile(values, [p_low, p_high])) if values.size else (0.0, 1.0)
+        limits.append((lo, hi if hi > lo else lo + 1.0))
+    return limits
+
+
+def percentile_rgb(chw, rgb_indices=(2, 1, 0), p_low=2, p_high=98, limits=None):
+    """Percentile-stretched display image; pass `limits` (from `rgb_limits`) to put several images on one stretch."""
     x = np.asarray(chw, dtype=np.float32)[list(rgb_indices)]
     out = np.zeros_like(x)
     for i in range(3):
@@ -931,12 +1186,11 @@ def percentile_rgb(chw, rgb_indices=(2, 1, 0), p_low=2, p_high=98):
         finite = np.isfinite(band)
         if not finite.any():
             continue
-        lo, hi = np.percentile(band[finite], [p_low, p_high])
+        lo, hi = np.percentile(band[finite], [p_low, p_high]) if limits is None else limits[i]
         if hi <= lo:
             hi = lo + 1.0
         out[i] = np.clip((band - lo) / (hi - lo), 0, 1)
     return np.moveaxis(out, 0, -1)
-
 
 def false_color(chw, indices=(3, 2, 1), p_low=2, p_high=98):
     return percentile_rgb(chw, indices, p_low, p_high)
@@ -1079,11 +1333,11 @@ def free_accelerator():
     return None
 
 
-def save_json(path, payload):
+def save_json(path, payload, role="canonical"):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
-    return path
+    return register_output(path, role)
 ''')
 
 md("65e95022", r"""
@@ -1132,7 +1386,7 @@ for capability in ("burnscar", "crop"):
     for _key, _role, img_member, img_bytes, img_sha, mask_member, mask_bytes, mask_sha in spec["records"]:
         wanted[img_member] = (img_bytes, img_sha)
         wanted[mask_member] = (mask_bytes, mask_sha)
-    kept = stream_pinned_members(spec["archive_url"], spec["archive_bytes"], spec["archive_sha256"], wanted, CACHE_ROOT / "eval" / capability)
+    kept = stream_pinned_members(spec["archive_url"], spec["archive_bytes"], spec["archive_sha256"], wanted, CACHE_ROOT / "eval" / capability, label=capability)
     EVAL_PATHS[capability] = [(r[0], kept[r[2]], kept[r[5]]) for r in spec["records"]]
 
 for capability, spec in EVAL_SETS.items():
@@ -1150,7 +1404,7 @@ for capability, spec in EVAL_SETS.items():
         })
 
 # ---- validate everything before any model runs -------------------------------------------------------------------
-foundation_stack = [validate_six_band_scene(load_tiff(p), name=p.name, multiple_of=16) for p in SCENE_PATHS["foundation"]]
+foundation_stack = [validate_foundation_scene(load_tiff(p), name=p.name) for p in SCENE_PATHS["foundation"]]
 if len({s.shape for s in foundation_stack}) != 1:
     raise ValueError("foundation scenes must share one shape to form a time series")
 
@@ -1162,8 +1416,8 @@ for capability in ("flood", "burnscar"):
         EVAL_DATA[capability].append({"id": chip, "image": image, "label": label})
 for chip, img, lbl in EVAL_PATHS["crop"]:
     image = validate_crop_scene(load_tiff(img), name=f"crop/{chip}")
-    raw = load_tiff(lbl).astype(np.int64)
-    raw = raw[0] if raw.ndim == 3 else raw
+    raw = load_tiff(lbl)
+    raw = require_integer_labels(raw[0] if raw.ndim == 3 else raw, name=f"crop/{chip} label")
     label = validate_label(np.where(raw == 0, IGNORE_INDEX, raw - 1), name=f"crop/{chip} label", shape=(224, 224), num_classes=13)
     EVAL_DATA["crop"].append({"id": chip, "image": image, "label": label})
 
@@ -1179,10 +1433,12 @@ for capability, scene in NEW_SCENES.items():
 save_json(OUTPUT_ROOT / "provenance" / "sample_manifest.json", {
     "band_order": list(BANDS),
     "scaling": {
-        "foundation": "HLS digital numbers (reflectance × 10 000), standardised with the checkpoint's config.json statistics",
+        "foundation": "HLS digital numbers (reflectance × 10 000; units decided once from valid pixels, -9999 no-data kept), standardised with the checkpoint's config.json statistics",
         "flood/burnscar": "reflectance in [0, 1] (× 10 000 inputs scaled by 1e-4), standardised with the fine-tune's datamodule statistics",
-        "crop": "HLS digital numbers, standardised with the checkpoint's training statistics",
+        "crop": "HLS digital numbers (units decided once from valid pixels; -9999 no-data rejected), standardised with the checkpoint's training statistics",
     },
+    "unit_decisions": UNIT_DECISIONS,
+    "archive_verification": ARCHIVE_STATUS,
     "items": SAMPLE_MANIFEST,
 })
 print(pd.DataFrame([
@@ -1214,6 +1470,9 @@ For the crop model, the input contains **three dates × six bands = 18 raster ba
 """)
 
 code("492ccc64", r'''
+import datetime
+import re
+
 flood_example = EVAL_DATA["flood"][0]
 burn_example = EVAL_DATA["burnscar"][0]
 crop_example = EVAL_DATA["crop"][0]
@@ -1234,7 +1493,7 @@ axes[1, 2].set_title(f"Burn chip {burn_example['id']} — SWIR2/NIR/red")
 for ax in axes.ravel():
     ax.axis("off")
 plt.tight_layout()
-plt.savefig(OUTPUT_ROOT / "figures" / "eo_inputs_overview.png", dpi=150, bbox_inches="tight")
+save_figure(OUTPUT_ROOT / "figures" / "eo_inputs_overview.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 band_stats = pd.DataFrame(
@@ -1245,6 +1504,29 @@ band_stats = pd.DataFrame(
     ]
 ).round(4)
 print(band_stats.to_string(index=False))
+
+
+# The foundation time series: one location on four dates. HLS file names carry the acquisition as YYYYDDD
+# (year and day of year), e.g. ...2018026T173609 -> 2018-01-26.
+def acquisition_date(stem):
+    match = re.search(r"\.(\d{4})(\d{3})T\d{6}", stem)
+    if match is None:
+        return stem
+    return (datetime.date(int(match[1]), 1, 1) + datetime.timedelta(days=int(match[2]) - 1)).isoformat()
+
+
+FOUNDATION_DATES = [acquisition_date(p.stem) for p in SCENE_PATHS["foundation"]]
+dates_limits = rgb_limits(foundation_stack)
+fig, axes = plt.subplots(1, len(foundation_stack), figsize=(4.5 * len(foundation_stack), 4.8))
+for i, (ax, scene) in enumerate(zip(axes, foundation_stack)):
+    ax.imshow(percentile_rgb(scene, limits=dates_limits))
+    ax.set_title(f"Foundation date {i + 1}: {FOUNDATION_DATES[i]}")
+    ax.axis("off")
+fig.suptitle("Foundation time series: one location, natural colour, one shared stretch (brightness differences are real)")
+plt.tight_layout()
+save_figure(OUTPUT_ROOT / "figures" / "foundation_dates.png", dpi=130, bbox_inches="tight")
+plt.show()
+print(pd.DataFrame({"date": [f"date {i + 1}" for i in range(len(FOUNDATION_DATES))], "acquired": FOUNDATION_DATES}).to_string(index=False))
 ''')
 
 md("2a046a3c", r"""
@@ -1259,7 +1541,7 @@ We will inspect two things:
 
 The reconstruction score is compared with a simple **mean-fill baseline** that fills every hidden patch with the mean of the visible pixels of the same band and date. This is a check on the pretraining objective, not a measure of downstream environmental skill. An embedding has no intrinsic accuracy: judging whether it is useful for, say, flood mapping needs labelled chips and a downstream probe, which the Prithvi feature-extraction DIMER E2E tutorial demonstrates.
 
-**Workshop prediction:** Before running the next cells, which two dates do you expect to have the most similar scene embeddings?
+**Workshop prediction:** Look at the four dated foundation images at the end of §6. Before running the next cells, which two dates do you expect to have the most similar embeddings, and why?
 """)
 
 code("46cac0ce", r'''
@@ -1282,20 +1564,17 @@ def build_foundation_model():
 
 
 def normalise_foundation(frames, *, name="frames"):
-    """(6, T, H, W) HLS digital numbers -> standardised; -9999 no-data -> 0.0001 as the upstream inference script."""
+    """(6, T, H, W) HLS digital numbers from `validate_foundation_scene` -> standardised; -9999 no-data -> 0.0001 as the
+    upstream inference script. Units were decided once, at validation: this function never rescales its input."""
     x = np.asarray(frames, dtype=np.float32)
     if x.ndim != 4 or x.shape[0] != 6:
         raise ValueError(f"{name}: expected (6, T, H, W), got {x.shape}")
     if not 1 <= x.shape[1] <= 4:
         raise ValueError(f"{name}: the checkpoint was pretrained on up to 4 dates; got {x.shape[1]}")
-    if float(x.min()) >= 0.0 and float(x.max()) <= 1.5:
-        x = x * 10_000.0
-        note(name, "reflectance in [0, 1] converted to HLS digital numbers (× 10 000)")
     mean = np.asarray(FOUNDATION_MEANS, dtype=np.float32)[:, None, None, None]
     std = np.asarray(FOUNDATION_STDS, dtype=np.float32)[:, None, None, None]
-    x = np.where(x == -9999, 0.0001, (x - mean) / std)
+    x = np.where(x == NODATA, 0.0001, (x - mean) / std)
     return np.ascontiguousarray(x.astype(np.float32))
-
 
 def load_foundation_model():
     ckpt, audit = fetch_checkpoint("foundation")
@@ -1316,10 +1595,14 @@ def foundation_embedding(model, frames, *, name="frames"):
     with torch.inference_mode():
         features = model.encoder.forward_features(batch)
     final = features[-1]
-    cls = final[:, 0].float()
-    mean_patch = final[:, 1:].float().mean(dim=1)
-    return cls.cpu().numpy()[0], mean_patch.cpu().numpy()[0]
-
+    dim = FOUNDATION_CONFIG["embed_dim"]
+    if final.ndim != 3 or final.shape[0] != 1 or final.shape[1] < 2 or final.shape[-1] != dim:
+        raise InvalidModelOutput(f"{name}: unexpected encoder output shape {tuple(final.shape)}")
+    cls = final[:, 0].float().cpu().numpy()[0]
+    mean_patch = final[:, 1:].float().mean(dim=1).cpu().numpy()[0]
+    check_embedding(cls, name=f"{name} CLS embedding", dim=dim)
+    check_embedding(mean_patch, name=f"{name} mean-patch embedding", dim=dim)
+    return cls, mean_patch
 
 def foundation_reconstruction(model, frames, mask_ratio=0.75, seed=42):
     """Seeded masked-patch reconstruction. TerraTorch returns the prediction and the (B, T, H, W) pixel mask
@@ -1330,7 +1613,9 @@ def foundation_reconstruction(model, frames, mask_ratio=0.75, seed=42):
         loss, pred, mask = model(batch, None, None, mask_ratio)
     loss_value = float(loss["loss"] if isinstance(loss, Mapping) else loss)
     if mask.ndim != 4 or pred.shape != batch.shape:
-        raise RuntimeError(f"unexpected PrithviMAE output shapes: pred {tuple(pred.shape)}, mask {tuple(mask.shape)}")
+        raise InvalidModelOutput(f"unexpected PrithviMAE output shapes: pred {tuple(pred.shape)}, mask {tuple(mask.shape)}")
+    if not np.isfinite(loss_value) or not bool(torch.isfinite(pred).all()):
+        raise InvalidModelOutput("masked reconstruction returned a non-finite loss or prediction; no result is recorded")
     mask_b = mask[:, None].expand(-1, batch.shape[1], -1, -1, -1).to(batch.dtype)  # (1, 6, T, H, W)
     visible = mask_b == 0
     baseline = batch.clone()
@@ -1346,12 +1631,37 @@ def foundation_reconstruction(model, frames, mask_ratio=0.75, seed=42):
         "masked_mse": round(loss_value, 6),
         "baseline_mean_fill_mse": round(float(baseline_loss), 6),
         "masked_fraction": round(float(mask.float().mean()), 4),
+        "masked_pixel_positions": int(mask.sum()),
         "mask_ratio": mask_ratio,
         "seed": seed,
         "units": "standardised (the pretraining loss)",
         "reconstruction_standardised": merged[0].float().cpu().numpy(),
         "mask": mask[0].float().cpu().numpy(),
     }
+
+
+def reconstruction_record(result, scene_id):
+    """The JSON-serialisable part of a reconstruction result (arrays dropped)."""
+    return {"scene_id": scene_id, **{k: v for k, v in result.items() if not isinstance(v, np.ndarray)}}
+
+
+def reconstruction_panels(ax_masked, ax_rec, frames, result, *, date=0, limits=None):
+    """One date as the model saw it (hidden patches grey) and with the hidden patches reconstructed, both on the
+    observed image's display stretch, so observed and reconstructed pixels can be told apart."""
+    mean = np.asarray(FOUNDATION_MEANS, dtype=np.float32)[:, None, None, None]
+    std = np.asarray(FOUNDATION_STDS, dtype=np.float32)[:, None, None, None]
+    observed = np.asarray(frames, dtype=np.float32)[:, date]
+    limits = limits or rgb_limits([observed])
+    shown = percentile_rgb(observed, limits=limits)
+    shown[result["mask"][date] > 0] = 0.5
+    ax_masked.imshow(shown)
+    ax_masked.set_title(f"Date {date + 1} as the model saw it: {result['mask_ratio']:.0%} of patches hidden (grey)")
+    reconstructed = (result["reconstruction_standardised"] * std + mean)[:, date]
+    ax_rec.imshow(percentile_rgb(reconstructed, limits=limits))
+    ax_rec.set_title(
+        f"Visible patches + reconstruction of the {result['mask_ratio']:.0%} hidden\n"
+        f"masked MSE={result['masked_mse']:.4f}; mean-fill={result['baseline_mean_fill_mse']:.4f}"
+    )
 ''')
 
 code("f369c51e", r'''
@@ -1360,6 +1670,11 @@ foundation_model, foundation_audit, foundation_converted = load_foundation_model
 # Four chronological images of the same location -> (6, T, H, W)
 foundation_frames = np.stack(foundation_stack, axis=1)
 date_ids = [p.stem for p in SCENE_PATHS["foundation"]]
+date_labels = [f"date {i + 1} ({d})" for i, d in enumerate(FOUNDATION_DATES)]
+FOUNDATION_SCENE_ID = "+".join(date_ids)
+# The canonical ratio is the pretraining ratio. Do not edit it here: the controlled-change activity (§14) runs its own
+# ratio in a separate cell, with separate state and output files.
+CANONICAL_MASK_RATIO = FOUNDATION_CONFIG["mask_ratio"]
 
 scene_cls, scene_mean = foundation_embedding(foundation_model, foundation_frames, name="foundation stack")
 date_cls, date_mean = [], []
@@ -1371,12 +1686,13 @@ date_mean = np.stack(date_mean)
 normed = date_mean / np.linalg.norm(date_mean, axis=1, keepdims=True)
 similarity = normed @ normed.T
 
-np.savez_compressed(
+save_npz(
     OUTPUT_ROOT / "embeddings" / "prithvi_embeddings.npz",
-    scene_id=np.array(["+".join(date_ids)]),
+    scene_id=np.array([FOUNDATION_SCENE_ID]),
     scene_cls=scene_cls[None],
     scene_mean_patch=scene_mean[None],
     date_ids=np.array(date_ids),
+    date_acquired=np.array(FOUNDATION_DATES),
     date_cls=np.stack(date_cls),
     date_mean_patch=date_mean,
     date_cosine_similarity=similarity,
@@ -1384,49 +1700,41 @@ np.savez_compressed(
 
 reconstruction_result = None
 if RUN_RECONSTRUCTION:
-    reconstruction_result = foundation_reconstruction(foundation_model, foundation_frames, mask_ratio=0.75, seed=SEED)
-    save_json(
-        OUTPUT_ROOT / "metrics" / "reconstruction.json",
-        {"scene_id": "+".join(date_ids), **{k: v for k, v in reconstruction_result.items() if not isinstance(v, np.ndarray)}},
-    )
+    reconstruction_result = foundation_reconstruction(foundation_model, foundation_frames, mask_ratio=CANONICAL_MASK_RATIO, seed=SEED)
+    save_json(OUTPUT_ROOT / "metrics" / "reconstruction.json", reconstruction_record(reconstruction_result, FOUNDATION_SCENE_ID))
 
-fig, axes = plt.subplots(1, 3, figsize=(17, 5))
+del foundation_model
+print("GPU MiB still allocated after release:", free_accelerator())
+
+fig, axes = plt.subplots(1, 4, figsize=(23, 5.5))
 im = axes[0].imshow(similarity, vmin=0, vmax=1)
 axes[0].set_title("Cosine similarity of one-date embeddings")
-axes[0].set_xlabel("Date index")
-axes[0].set_ylabel("Date index")
+axes[0].set_xticks(range(len(FOUNDATION_DATES)), FOUNDATION_DATES, rotation=45, ha="right")
+axes[0].set_yticks(range(len(FOUNDATION_DATES)), FOUNDATION_DATES)
 plt.colorbar(im, ax=axes[0], fraction=0.046)
-axes[1].imshow(percentile_rgb(foundation_stack[0]))
-axes[1].set_title("Date 1 input")
+date1_limits = rgb_limits([foundation_stack[0]])
+axes[1].imshow(percentile_rgb(foundation_stack[0], limits=date1_limits))
+axes[1].set_title(f"Date 1 observed ({FOUNDATION_DATES[0]})")
 if reconstruction_result is not None:
-    rec = reconstruction_result["reconstruction_standardised"]
-    mean = np.asarray(FOUNDATION_MEANS, dtype=np.float32)[:, None, None, None]
-    std = np.asarray(FOUNDATION_STDS, dtype=np.float32)[:, None, None, None]
-    axes[2].imshow(percentile_rgb((rec * std + mean)[:, 0]))
-    axes[2].set_title(
-        f"Date 1: visible patches + reconstruction of 75% hidden\n"
-        f"masked MSE={reconstruction_result['masked_mse']:.4f}; mean-fill={reconstruction_result['baseline_mean_fill_mse']:.4f}"
-    )
+    reconstruction_panels(axes[2], axes[3], foundation_frames, reconstruction_result, date=0, limits=date1_limits)
 else:
     axes[2].text(0.5, 0.5, "Reconstruction disabled", ha="center", va="center")
 for ax in axes[1:]:
     ax.axis("off")
 plt.tight_layout()
-plt.savefig(OUTPUT_ROOT / "figures" / "foundation_representation.png", dpi=150, bbox_inches="tight")
+save_figure(OUTPUT_ROOT / "figures" / "foundation_representation.png", dpi=150, bbox_inches="tight")
 plt.show()
 
-print(pd.DataFrame(similarity, index=[f"date {i+1}" for i in range(len(date_ids))], columns=[f"date {i+1}" for i in range(len(date_ids))]).round(3))
+print(pd.DataFrame(similarity, index=date_labels, columns=date_labels).round(3).to_string())
 print({
     "embedding_dim": int(scene_mean.shape[0]),
     "token_semantics": "final normalised encoder layer; CLS token and mean over all patch tokens",
     "reconstruction": None if reconstruction_result is None else {
+        "mask_ratio": reconstruction_result["mask_ratio"],
         "masked_mse": reconstruction_result["masked_mse"],
         "mean_fill_mse": reconstruction_result["baseline_mean_fill_mse"],
     },
 })
-
-del foundation_model
-print("GPU MiB still allocated after release:", free_accelerator())
 ''')
 
 keep("57172310")
@@ -1504,8 +1812,11 @@ def load_segmentation_model(capability):
 
 
 def segment(model, capability, images, batch_size=2):
-    """(N, 6, 512, 512) reflectance -> masks (N, H, W) uint8 and positive-class scores (N, H, W) float32."""
+    """(N, 6, 512, 512) reflectance -> masks (N, H, W) uint8 and positive-class scores (N, H, W) float32. The class
+    scores are checked (shape, finite values, probabilities, label domain) before any mask is formed: an invalid
+    output raises InvalidModelOutput instead of becoming an ordinary-looking map."""
     spec = SEG_SPECS[capability]
+    n_classes = len(spec["class_names"])
     mean = np.asarray(spec["means"], dtype=np.float32)[None, :, None, None]
     std = np.asarray(spec["stds"], dtype=np.float32)[None, :, None, None]
     masks, scores = [], []
@@ -1514,13 +1825,18 @@ def segment(model, capability, images, batch_size=2):
         with torch.inference_mode(), torch.autocast(device_type=DEVICE.split(":")[0], dtype=torch.float16, enabled=USE_AMP):
             out = model(batch)
         logits = (out.output if hasattr(out, "output") else out).float()
-        if tuple(logits.shape[-2:]) != tuple(batch.shape[-2:]):
+        name = f"{capability} model output (images {start}..{start + batch.shape[0] - 1})"
+        if logits.ndim == 4 and tuple(logits.shape[-2:]) != tuple(batch.shape[-2:]):
+            note(name, f"class scores resized {tuple(logits.shape[-2:])} -> {tuple(batch.shape[-2:])} (bilinear) before argmax")
             logits = torch.nn.functional.interpolate(logits, size=batch.shape[-2:], mode="bilinear", align_corners=False)
+        check_class_scores(logits, name=name, batch=batch.shape[0], num_classes=n_classes, spatial=batch.shape[-2:])
         prob = torch.softmax(logits, dim=1)
-        masks.append(prob.argmax(dim=1).to(torch.uint8).cpu().numpy())
+        check_probabilities(prob, name=name)
+        mask = prob.argmax(dim=1).to(torch.uint8).cpu().numpy()
+        check_class_map(mask, name=name, num_classes=n_classes)
+        masks.append(mask)
         scores.append(prob[:, 1].cpu().numpy().astype(np.float32))
     return np.concatenate(masks), np.concatenate(scores)
-
 
 def run_binary_capability(capability, title):
     """Load, evaluate on the labelled test chips against the all-negative baseline, infer the new scene, export."""
@@ -1560,9 +1876,9 @@ def run_binary_capability(capability, title):
     save_json(OUTPUT_ROOT / "metrics" / f"{capability}_metrics.json", report)
     pred_dir = OUTPUT_ROOT / "predictions" / capability
     pred_dir.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(pred_dir / "evaluation_predictions.npz", ids=np.array([r["id"] for r in records]),
+    save_npz(pred_dir / "evaluation_predictions.npz", ids=np.array([r["id"] for r in records]),
                         mask=masks, positive_score=scores.astype(np.float16), class_names=np.array(SEG_SPECS[capability]["class_names"]))
-    np.savez_compressed(pred_dir / "new_scene_prediction.npz", ids=np.array([NEW_SCENES[capability]["id"]]),
+    save_npz(pred_dir / "new_scene_prediction.npz", ids=np.array([NEW_SCENES[capability]["id"]]),
                         mask=new_mask, positive_score=new_score.astype(np.float16), class_names=np.array(SEG_SPECS[capability]["class_names"]))
 
     rgb_idx = (2, 1, 0) if capability == "flood" else (5, 3, 2)
@@ -1589,7 +1905,7 @@ def run_binary_capability(capability, title):
         ax.axis("off")
     fig.suptitle(title)
     plt.tight_layout()
-    plt.savefig(OUTPUT_ROOT / "figures" / f"{capability}_mapping.png", dpi=130, bbox_inches="tight")
+    save_figure(OUTPUT_ROOT / "figures" / f"{capability}_mapping.png", dpi=130, bbox_inches="tight")
     plt.show()
 
     table = pd.DataFrame(
@@ -1672,6 +1988,9 @@ crop_src = crop_src[:start] + crop_src[end:]
 start, end = crop_src.index("def load_crop_model():"), crop_src.index("def predict_crop")
 crop_src = crop_src[:start] + CROP_LOADER + crop_src[end:]
 crop_src = crop_src.replace("CROP_CONVERTED_SIZE = 537_722_508\n", "")
+start, end = crop_src.index("def crop_normalise"), crop_src.index("def load_crop_model():")
+crop_src = crop_src[:start] + CROP_NORMALISE + crop_src[end:]
+crop_src = crop_src[:crop_src.index("def predict_crop")] + CROP_PREDICT
 code("4797da73", crop_src)
 
 code("cb180a5b", r'''
@@ -1715,10 +2034,10 @@ if RUN_CROP_MAPPING:
     save_json(OUTPUT_ROOT / "metrics" / "crop_metrics.json", crop_report)
     pred_dir = OUTPUT_ROOT / "predictions" / "crop"
     pred_dir.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(pred_dir / "evaluation_predictions.npz", ids=np.array([r["id"] for r in records]),
+    save_npz(pred_dir / "evaluation_predictions.npz", ids=np.array([r["id"] for r in records]),
                         mask=np.stack(masks), scores=np.stack([p[1] for p in predicted]).astype(np.float16),
                         class_names=np.array(CROP_CLASS_NAMES))
-    np.savez_compressed(pred_dir / "new_scene_prediction.npz", ids=np.array([NEW_SCENES["crop"]["id"]]),
+    save_npz(pred_dir / "new_scene_prediction.npz", ids=np.array([NEW_SCENES["crop"]["id"]]),
                         mask=new_mask[None], scores=new_scores[None].astype(np.float16), class_names=np.array(CROP_CLASS_NAMES))
 
     cmap = matplotlib.colors.ListedColormap(plt.get_cmap("tab20").colors[:13])
@@ -1743,7 +2062,7 @@ if RUN_CROP_MAPPING:
     for ax in axes.ravel():
         ax.axis("off")
     plt.tight_layout()
-    plt.savefig(OUTPUT_ROOT / "figures" / "crop_mapping.png", dpi=130, bbox_inches="tight")
+    save_figure(OUTPUT_ROOT / "figures" / "crop_mapping.png", dpi=130, bbox_inches="tight")
     plt.show()
 
     print(pd.DataFrame({
@@ -1814,6 +2133,16 @@ BYOD is deliberately outside the automatic sample path.
 
 The workshop does not silently insert missing bands, reorder ambiguous inputs, or resize, crop or pad incompatible data. Unit conversions (reflectance ↔ digital numbers) are applied only in the documented direction and are reported. BYOD runs inference only; for evaluation or adaptation on your own labelled chips, use the corresponding model's DIMER E2E notebook.
 
+### Units and no-data
+
+`BYOD_UNITS = "auto"` decides once, from the valid pixels, whether the file holds reflectance or HLS digital numbers (reflectance × 10 000). For the embedding and crop inputs, `-9999` is treated as no-data and excluded from that decision; a file whose valid values are ambiguous (a maximum between 1.5 and 100) is rejected, and you declare the units with `BYOD_UNITS = "reflectance"` or `"dn"`. Flood and burn-scar inputs follow their pipelines' rule (values above 2 are read as reflectance × 10 000; 0 and `-9999` are no-data). The crop checkpoint has no documented no-data handling, so crop input containing `-9999` is rejected.
+
+### Outputs and their limits
+
+Each BYOD run writes, before any model is loaded, its own directory `outputs/byod/<capability>/<file>-<sha256 prefix>-<RUN_ID>/` containing the prediction (or embedding) and `receipt.json`. The receipt binds the input file's size and SHA-256, the capability, the effective unit decision and preprocessing, the model identity, and the SHA-256 of every output.
+
+The outputs are **pixel arrays** (NPZ). CRS, affine transform, extent, resolution and no-data metadata are **not** carried over from a GeoTIFF input, so the outputs are not georeferenced GIS products. Keep the input file to recover the spatial reference, and validate alignment before overlaying a prediction on a map.
+
 ### Data movement and privacy
 
 The standalone BYOD path processes your file **inside the selected notebook runtime**. It is not submitted to a DIMER worker or DIMER API. A hosted notebook is still a third-party compute environment: do not upload confidential, restricted, sensitive, personal, regulated, export-controlled, or commercially licensed imagery unless you are authorized to process it there.
@@ -1821,9 +2150,14 @@ The standalone BYOD path processes your file **inside the selected notebook runt
 
 code("f23033f9", r'''
 # @title Optional BYOD inference
+import datetime
+
+BYOD_RECEIPT = None
 if not USE_BYOD:
     print("BYOD disabled — canonical Run all path complete.")
 else:
+    if BYOD_CAPABILITY not in {"embedding", "flood", "burnscar", "crop"}:
+        raise ValueError(f"Unsupported BYOD_CAPABILITY: {BYOD_CAPABILITY}")
     if BYOD_PATH:
         byod_path = Path(BYOD_PATH)
     else:
@@ -1843,42 +2177,75 @@ else:
     if not byod_path.is_file():
         raise FileNotFoundError(f"BYOD file not found: {byod_path}")
     byod_id = byod_path.stem
+    byod_sha256 = sha256_file(byod_path)
     raw = load_tiff(byod_path)
     _log_start = len(PREPROCESSING_LOG)
+    input_name = f"BYOD {BYOD_CAPABILITY} scene {byod_id}"
 
+    # 1. Validate against the capability's contract before any model is loaded.
     if BYOD_CAPABILITY == "embedding":
-        scene = validate_six_band_scene(raw, name="BYOD embedding scene", multiple_of=16)
-        model, _, _ = load_foundation_model()
-        cls, emb = foundation_embedding(model, scene[:, None], name="BYOD embedding scene")
-        del model
-        free_accelerator()
-        np.savez_compressed(OUTPUT_ROOT / "embeddings" / "byod_embedding.npz", ids=np.array([byod_id]), cls=cls[None], mean_patch=emb[None])
-        print({"capability": "embedding", "id": byod_id, "embedding_dim": len(emb)})
-
+        scene = validate_foundation_scene(raw, name=input_name, units=BYOD_UNITS)
     elif BYOD_CAPABILITY in {"flood", "burnscar"}:
-        image = validate_segmentation_chip(raw, name=f"BYOD {BYOD_CAPABILITY} scene")
-        model, audit, _ = load_segmentation_model(BYOD_CAPABILITY)
-        mask, score = segment(model, BYOD_CAPABILITY, [image])
-        del model
-        free_accelerator()
-        out = OUTPUT_ROOT / "predictions" / BYOD_CAPABILITY / "byod_prediction.npz"
-        np.savez_compressed(out, ids=np.array([byod_id]), mask=mask, positive_score=score.astype(np.float16),
-                            class_names=np.array(SEG_SPECS[BYOD_CAPABILITY]["class_names"]))
-        print({"capability": BYOD_CAPABILITY, "id": byod_id, "predicted_positive_fraction": round(float(mask.mean()), 4), "output": str(out)})
-
-    elif BYOD_CAPABILITY == "crop":
-        image = validate_crop_scene(raw, name="BYOD crop scene")
-        model, _, _, audit = load_crop_model()
-        mask, scores, fractions = predict_crop(model, image)
-        del model
-        free_accelerator()
-        out = OUTPUT_ROOT / "predictions" / "crop" / "byod_prediction.npz"
-        np.savez_compressed(out, ids=np.array([byod_id]), mask=mask[None], scores=scores[None].astype(np.float16),
-                            class_names=np.array(CROP_CLASS_NAMES))
-        print({"capability": "crop", "id": byod_id, "top_classes": sorted(fractions.items(), key=lambda kv: -kv[1])[:5], "output": str(out)})
-
+        scene = validate_segmentation_chip(raw, name=input_name, units=BYOD_UNITS)
     else:
-        raise ValueError(f"Unsupported BYOD_CAPABILITY: {BYOD_CAPABILITY}")
+        scene = validate_crop_scene(raw, name=input_name, units=BYOD_UNITS)
+
+    # 2. Create and check the output destination before any model is loaded; it does not depend on the sample stages.
+    byod_dir = OUTPUT_ROOT / "byod" / BYOD_CAPABILITY / f"{byod_id}-{byod_sha256[:12]}-{RUN_ID}"
+    byod_dir.mkdir(parents=True, exist_ok=True)
+    (byod_dir / ".write_check").write_bytes(b"")
+    (byod_dir / ".write_check").unlink()
+
+    # 3. Inference (the model is released even if inference fails).
+    spec_key = "foundation" if BYOD_CAPABILITY == "embedding" else BYOD_CAPABILITY
+    if BYOD_CAPABILITY == "embedding":
+        model, _, _ = load_foundation_model()
+        try:
+            cls, emb = foundation_embedding(model, scene[:, None], name=input_name)
+        finally:
+            del model
+            free_accelerator()
+        out = save_npz(byod_dir / "embedding.npz", role="byod", ids=np.array([byod_id]), cls=cls[None], mean_patch=emb[None])
+        summary = {"embedding_dim": len(emb)}
+    elif BYOD_CAPABILITY in {"flood", "burnscar"}:
+        model, _, _ = load_segmentation_model(BYOD_CAPABILITY)
+        try:
+            mask, score = segment(model, BYOD_CAPABILITY, [scene])
+        finally:
+            del model
+            free_accelerator()
+        out = save_npz(byod_dir / "prediction.npz", role="byod", ids=np.array([byod_id]), mask=mask,
+                       positive_score=score.astype(np.float16), class_names=np.array(SEG_SPECS[BYOD_CAPABILITY]["class_names"]))
+        summary = {"predicted_positive_fraction": round(float(mask.mean()), 4)}
+    else:
+        model, _, _, _ = load_crop_model()
+        try:
+            mask, scores, fractions = predict_crop(model, scene)
+        finally:
+            del model
+            free_accelerator()
+        out = save_npz(byod_dir / "prediction.npz", role="byod", ids=np.array([byod_id]), mask=mask[None],
+                       scores=scores[None].astype(np.float16), class_names=np.array(CROP_CLASS_NAMES))
+        summary = {"top_classes": sorted(fractions.items(), key=lambda kv: -kv[1])[:5]}
+
+    # 4. A durable receipt binding the input bytes, the settings actually applied and the outputs.
+    receipt = {
+        "run_id": RUN_ID,
+        "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "capability": BYOD_CAPABILITY,
+        "input": {"file_name": byod_path.name, "bytes": byod_path.stat().st_size, "sha256": byod_sha256,
+                  "pixel_array_shape": list(raw.shape), "dtype": str(raw.dtype)},
+        "units": {"requested": BYOD_UNITS, **UNIT_DECISIONS.get(input_name, {})},
+        "preprocessing": PREPROCESSING_LOG[_log_start:],
+        "model": {"id": MODEL_SPECS[spec_key]["model_id"], "revision": MODEL_SPECS[spec_key]["revision"],
+                  "converted_safetensors_sha256": MODEL_SPECS[spec_key]["converted_sha256"], "precision": PRECISION[spec_key]},
+        "outputs": {out.name: {"bytes": out.stat().st_size, "sha256": sha256_file(out)}},
+        "georeferencing": "not preserved: pixel arrays without CRS, affine transform, extent, resolution or no-data metadata",
+        "evidence": "inference only on user data without reference labels; no accuracy is implied",
+    }
+    receipt_path = save_json(byod_dir / "receipt.json", receipt, role="byod")
+    BYOD_RECEIPT = {**receipt, "receipt_file": receipt_path.relative_to(OUTPUT_ROOT).as_posix()}
+    print({"capability": BYOD_CAPABILITY, "id": byod_id, **summary, "output": str(out), "receipt": str(receipt_path)})
     report_preprocessing(_log_start)
 ''')
 
@@ -1904,6 +2271,7 @@ The workshop does not establish:
 - performance under different atmospheric-correction pipelines;
 - operational flood, fire, agricultural, or land-use accuracy;
 - calibrated per-pixel uncertainty;
+- georeferenced map products: predictions are exported as pixel arrays (NPZ) without CRS, affine transform or extent, and must be re-aligned with their source scene before GIS use;
 - causal attribution to climate change; or
 - suitability for safety-critical decisions.
 
@@ -1940,7 +2308,7 @@ keep("5b67565a")
 
 code("33f19388", r'''
 import datetime
-import shutil
+import zipfile
 
 model_manifest = {
     capability: {
@@ -1954,11 +2322,34 @@ model_manifest = {
     for capability, spec in MODEL_SPECS.items()
 }
 
+output_root = OUTPUT_ROOT.resolve()
+manifest_rel = "provenance/experiment_manifest.json"
+activity = globals().get("MASK_RATIO_ACTIVITY")  # set only by the optional controlled-change activity (§14)
+byod = globals().get("BYOD_RECEIPT")
+
+
+def produced_inventory():
+    """The files this run wrote (registered in §4), with role, size and SHA-256; paths relative to OUTPUT_DIR."""
+    rows = {}
+    for path, role in sorted(PRODUCED_FILES.items()):
+        p = Path(path)
+        if p.is_file() and p.is_relative_to(output_root) and p.relative_to(output_root).as_posix() != manifest_rel:
+            rows[p.relative_to(output_root).as_posix()] = {"role": role, "bytes": p.stat().st_size, "sha256": sha256_file(p)}
+    return rows
+
+
+produced = produced_inventory()
+not_from_this_run = sorted(
+    p.relative_to(output_root).as_posix() for p in output_root.rglob("*")
+    if p.is_file() and str(p.resolve()) not in PRODUCED_FILES and p.relative_to(output_root).as_posix() != manifest_rel
+)
+
 experiment_manifest = {
     "notebook_spec": "2.1",
     "notebook_profile": "MULTI-CAPABILITY",
     "notebook_mode": "WORKSHOP",
-    "workshop_revision": "0.2.0-candidate",
+    "workshop_revision": "0.2.1-candidate",
+    "run_id": RUN_ID,
     "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     "random_seed": SEED,
     "runtime": {**RUNTIME, "device": DEVICE},
@@ -1967,22 +2358,40 @@ experiment_manifest = {
         capability: {k: v for k, v in spec.items() if k != "records"} | {"record_ids": [r[0] for r in spec["records"]]}
         for capability, spec in EVAL_SETS.items()
     },
+    "archive_verification": ARCHIVE_STATUS,
     "new_scenes": {k: v["id"] for k, v in NEW_SCENES.items()},
     "samples": "provenance/sample_manifest.json",
+    "unit_decisions": UNIT_DECISIONS,
     "preprocessing_log": PREPROCESSING_LOG,
     "capabilities": {
-        "foundation": {"executed": True, "reconstruction": bool(RUN_RECONSTRUCTION), "mask_ratio": 0.75,
-                       "baseline": "mean fill", "metrics": "metrics/reconstruction.json" if RUN_RECONSTRUCTION else None},
-        "flood": {"executed": bool(RUN_FLOOD_MAPPING), "decision_rule": "argmax", "baseline": "all no water",
-                  "metrics": "metrics/flood_metrics.json" if RUN_FLOOD_MAPPING else None},
-        "burnscar": {"executed": bool(RUN_BURNSCAR_MAPPING), "decision_rule": "argmax", "baseline": "all not burned",
-                     "metrics": "metrics/burnscar_metrics.json" if RUN_BURNSCAR_MAPPING else None},
-        "crop": {"executed": bool(RUN_CROP_MAPPING), "decision_rule": "argmax", "baseline": "majority class",
-                 "metrics": "metrics/crop_metrics.json" if RUN_CROP_MAPPING else None},
+        "foundation": {
+            "executed": True, "reconstruction": reconstruction_result is not None, "baseline": "mean fill",
+            "mask_ratio": None if reconstruction_result is None else reconstruction_result["mask_ratio"],
+            "seed": None if reconstruction_result is None else reconstruction_result["seed"],
+            "metrics": "metrics/reconstruction.json" if reconstruction_result is not None else None,
+        },
+        "flood": {"executed": flood_report is not None, "decision_rule": "argmax", "baseline": "all no water",
+                  "metrics": "metrics/flood_metrics.json" if flood_report is not None else None},
+        "burnscar": {"executed": burn_report is not None, "decision_rule": "argmax", "baseline": "all not burned",
+                     "metrics": "metrics/burnscar_metrics.json" if burn_report is not None else None},
+        "crop": {"executed": crop_report is not None, "decision_rule": "argmax", "baseline": "majority class",
+                 "metrics": "metrics/crop_metrics.json" if crop_report is not None else None},
     },
+    "activities": {} if activity is None else {"mask_ratio": activity},
+    "byod": None if byod is None else {
+        "capability": byod["capability"], "receipt": byod["receipt_file"], "input_sha256": byod["input"]["sha256"],
+        "outputs": byod["outputs"],
+    },
+    "outputs": produced,
+    "files_not_from_this_run": {
+        "count": len(not_from_this_run), "paths": not_from_this_run[:100],
+        "policy": "left in place, never deleted and not packaged; they belong to earlier runs",
+    },
+    "spatial_reference": "outputs are pixel arrays (NPZ); CRS, transform and extent are not preserved",
     "evidence_boundary": (
         "All metrics are tutorial sample metrics measured in this notebook on 12 labelled chips per task "
-        "(masked reconstruction on one four-date scene). They are not benchmark or operational estimates."
+        "(masked reconstruction on one four-date scene). They are not benchmark or operational estimates. "
+        "Optional activities and BYOD outputs are listed separately and are not canonical results."
     ),
     "standalone_contract": {
         "repository_clone_required": False,
@@ -1993,11 +2402,18 @@ experiment_manifest = {
     },
 }
 
-manifest_path = save_json(OUTPUT_ROOT / "provenance" / "experiment_manifest.json", experiment_manifest)
-bundle_base = str(Path(OUTPUT_DIR).resolve()) + "_DIMER_EO_Workshop_Report"
-bundle_path = shutil.make_archive(bundle_base, "zip", root_dir=Path(OUTPUT_DIR).resolve())
+manifest_path = save_json(OUTPUT_ROOT / manifest_rel, experiment_manifest)
+bundle_path = Path(f"{output_root}_DIMER_EO_Workshop_Report_{RUN_ID}.zip")
+with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+    for rel in [*produced, manifest_rel]:
+        bundle.write(output_root / rel, arcname=rel)
 
-print({"manifest": str(manifest_path), "report_bundle": bundle_path, "report_bundle_sha256": sha256_file(bundle_path)})
+print({
+    "run_id": RUN_ID, "manifest": str(manifest_path), "report_bundle": str(bundle_path),
+    "report_bundle_sha256": sha256_file(bundle_path), "files_packaged": len(produced) + 1,
+    "optional_outputs": sorted({v["role"] for v in produced.values()} - {"canonical"}),
+    "files_not_from_this_run": len(not_from_this_run),
+})
 ''')
 
 md("982c1134", r"""
@@ -2015,6 +2431,10 @@ md("982c1134", r"""
 | Out of GPU memory | runtime has less VRAM, or an earlier model is still referenced | restart fresh and use the canonical top-to-bottom path; each stage deletes its model and prints the GPU memory still allocated |
 | BYOD band-count or size error | wrong sensor/product, band layout or chip size | provide the exact documented capability input; the workshop does not resize |
 | Crop input rejected | not 18 bands or not 224×224 | provide three dates × six bands at the checkpoint's expected size |
+| Units reported as ambiguous | valid values fall between reflectance (≤ 1.5) and HLS digital numbers (≥ 100) | check the product's scaling and set `BYOD_UNITS` to `"reflectance"` or `"dn"` |
+| Crop input rejected for `-9999` no-data | the crop checkpoint has no documented no-data handling | fill or crop the no-data pixels before inference |
+| `InvalidModelOutput` (NaN/Inf or wrong-shaped class scores) | a numerical failure or an unexpected model output; no map, metric or export was produced from it | rerun the capability in a fresh runtime; if it persists, record the input, runtime and precision and report it |
+| Archive re-streamed although its members are cached | no whole-archive verification receipt for the cached members (for example after an earlier digest failure) | let the stream finish; the cache is reused only after the whole archive has verified |
 | Results look plausible but unexpected | domain shift or preprocessing mismatch | inspect sensor, units, band order, season, resolution, and local reference data before interpreting the map |
 
 An explicit error is preferable to silently changing a user's Earth-observation data contract.
@@ -2034,7 +2454,10 @@ completion = {
     "burnscar_iou": None if burn_report is None else burn_report["model_metrics"]["positive_iou"],
     "crop_mean_iou": None if crop_report is None else crop_report["model_metrics"]["mean_iou"],
     "byod_enabled": bool(USE_BYOD),
+    "byod_receipt": None if BYOD_RECEIPT is None else BYOD_RECEIPT["receipt_file"],
+    "run_id": RUN_ID,
     "output_directory": str(OUTPUT_ROOT.resolve()),
+    "report_bundle": str(bundle_path),
 }
 display(pd.Series(completion, name="value").to_frame())
 print(
@@ -2082,12 +2505,88 @@ _GUIDED_TRY = r"""
 
 Use the masked-reconstruction capability because it gives you known truth for the deliberately hidden pixels.
 
-**Predict → change one variable → rerun → observe → explain**
+**Predict → change one variable → run → observe → explain**
 
-In the reconstruction cell, change only the mask ratio from the canonical `0.75` to `0.50`. Before rerunning, predict how the masked-pixel reconstruction error should change when the model is asked to reconstruct fewer hidden patches. Rerun only the reconstruction-related cells, compare the masked MSE, and explain whether the direction of change matches your expectation.
+1. **Predict.** The canonical run hid 75% of the patches (`mask_ratio = 0.75`). If only 50% are hidden, should the masked-pixel reconstruction error go up or down? What about the mean-fill baseline?
+2. **Change one variable.** In the cell below, set `RUN_MASK_RATIO_ACTIVITY = True` and keep `ACTIVITY_MASK_RATIO = 0.50`. Run **only that cell**. It loads its own copy of the foundation model (the §7 cell has already released its copy), uses the canonical seed, and writes to `outputs/activities/mask_ratio_0.50/`. It does not change the canonical result, `metrics/reconstruction.json`, or the §7 figure, and it checks this before finishing.
+3. **Observe.** Compare the two rows of the table and the two pairs of images: hidden patches are grey on the left, reconstructed on the right.
+4. **Explain** whether the direction of change matches your prediction.
 
-Keep this exploratory result separate from the canonical `0.75` result recorded by the default **Run all** path.
+**Read the comparison carefully.** The MSE is averaged over the hidden pixels only, so the two ratios score different pixel populations, and at 0.50 the model sees more context around each hidden patch. Compare each model score with **its own** mean-fill baseline (the `model / mean-fill` column), not only the two raw MSE values. This exercise probes the pretraining objective; it is not an estimate of downstream mapping skill.
+
+To add the activity to the report bundle, rerun the §15 export cell afterwards. The bundle and manifest list it under `activities`, separately from the canonical results.
 """
+
+_GUIDED_ACTIVITY_CODE = r'''
+# @title Controlled change: reconstruction mask ratio (optional; canonical results are not modified)
+RUN_MASK_RATIO_ACTIVITY = False  # @param {type:"boolean"}
+ACTIVITY_MASK_RATIO = 0.50       # @param {type:"number"}
+ACTIVITY_SEED = SEED             # the canonical seed, so that only the mask ratio changes
+
+if not RUN_MASK_RATIO_ACTIVITY:
+    print("Activity not run. Set RUN_MASK_RATIO_ACTIVITY = True and run this cell only.")
+else:
+    ratio = float(ACTIVITY_MASK_RATIO)
+    if not 0.0 < ratio < 1.0:
+        raise ValueError(f"ACTIVITY_MASK_RATIO must be strictly between 0 and 1; got {ACTIVITY_MASK_RATIO}")
+    canonical_paths = [OUTPUT_ROOT / "metrics" / "reconstruction.json", OUTPUT_ROOT / "figures" / "foundation_representation.png"]
+    canonical_digests = {str(p): sha256_file(p) for p in canonical_paths if p.is_file()}
+    canonical_values = None if reconstruction_result is None else reconstruction_record(reconstruction_result, FOUNDATION_SCENE_ID)
+
+    activity_dir = OUTPUT_ROOT / "activities" / f"mask_ratio_{ratio:.2f}"
+    activity_model, _, _ = load_foundation_model()  # the §7 cell released its model; this copy is released below
+    try:
+        activity_result = foundation_reconstruction(activity_model, foundation_frames, mask_ratio=ratio, seed=ACTIVITY_SEED)
+    finally:
+        del activity_model
+        free_accelerator()
+
+    activity_json = save_json(activity_dir / "reconstruction.json", {
+        "activity": "controlled change: masked-reconstruction mask ratio",
+        "run_id": RUN_ID,
+        "changed_variable": "mask_ratio",
+        **reconstruction_record(activity_result, FOUNDATION_SCENE_ID),
+        "canonical": canonical_values,
+        "interpretation_note": (
+            "MSE is averaged over hidden pixels only, so different mask ratios score different pixel populations; "
+            "compare each score with its own mean-fill baseline. Not an estimate of downstream mapping skill."
+        ),
+    }, role="activity")
+
+    rows = [(label, r) for label, r in (("canonical", reconstruction_result), ("activity", activity_result)) if r is not None]
+    date1_limits = rgb_limits([foundation_stack[0]])
+    fig, axes = plt.subplots(len(rows), 2, figsize=(13, 6.3 * len(rows)), squeeze=False)
+    for (label, result), (ax_masked, ax_rec) in zip(rows, axes):
+        reconstruction_panels(ax_masked, ax_rec, foundation_frames, result, date=0, limits=date1_limits)
+        ax_masked.set_title(f"{label}: " + ax_masked.get_title())
+    for ax in axes.ravel():
+        ax.axis("off")
+    plt.tight_layout()
+    save_figure(activity_dir / "reconstruction_comparison.png", role="activity", dpi=130, bbox_inches="tight")
+    plt.show()
+
+    display(pd.DataFrame([
+        {
+            "run": label, "mask_ratio": r["mask_ratio"], "seed": r["seed"], "masked_fraction": r["masked_fraction"],
+            "hidden_pixel_positions": r["masked_pixel_positions"], "masked_mse": r["masked_mse"],
+            "mean_fill_mse": r["baseline_mean_fill_mse"], "model / mean-fill": round(r["masked_mse"] / r["baseline_mean_fill_mse"], 4),
+        }
+        for label, r in rows
+    ]).set_index("run"))
+
+    unchanged = {str(p): sha256_file(p) for p in canonical_paths if p.is_file()} == canonical_digests and (
+        canonical_values is None or reconstruction_record(reconstruction_result, FOUNDATION_SCENE_ID) == canonical_values
+    )
+    if not unchanged:
+        raise RuntimeError("the activity changed a canonical reconstruction output; restart and run the notebook from the top")
+    MASK_RATIO_ACTIVITY = {
+        "mask_ratio": activity_result["mask_ratio"], "seed": activity_result["seed"],
+        "masked_mse": activity_result["masked_mse"], "baseline_mean_fill_mse": activity_result["baseline_mean_fill_mse"],
+        "record": activity_json.relative_to(OUTPUT_ROOT).as_posix(), "canonical_outputs_unchanged": True,
+    }
+    print({"activity": MASK_RATIO_ACTIVITY["record"], "canonical_outputs_unchanged": True,
+           "next": "rerun the §15 export cell to add this activity to the report bundle"})
+'''
 
 _GUIDED_CHECKPOINT = r"""
 ## Self-paced checkpoint
@@ -2174,6 +2673,7 @@ def apply_guided_layer(items):
     guided = []
     if "## Try it yourself — one controlled change" not in joined:
         guided.append({"cell_type":"markdown","id":"guided-controlled-change","metadata":{},"source":_GUIDED_TRY.strip("\n")})
+        guided.append({"cell_type":"code","id":"guided-controlled-change-run","metadata":{},"execution_count":None,"outputs":[],"source":_GUIDED_ACTIVITY_CODE.strip("\n")})
     if "## Self-paced checkpoint" not in joined:
         guided.append({"cell_type":"markdown","id":"guided-self-check","metadata":{},"source":_GUIDED_CHECKPOINT.strip("\n")})
     if "## Write an evidence-based conclusion" not in joined:
@@ -2187,7 +2687,7 @@ cells = apply_guided_layer(cells)
 nb = dict(orig)
 nb["cells"] = cells
 nb["metadata"] = dict(orig["metadata"])
-nb["metadata"]["workshop_revision"] = "0.2.0-candidate"
+nb["metadata"]["workshop_revision"] = "0.2.1-candidate"
 nb["metadata"]["dimer"] = dict(orig["metadata"]["dimer"]) | {"clean_runtime_evidence": "pending"}
 content = json.dumps(nb, indent=1, ensure_ascii=False) + "\n"
 if _args.check:
