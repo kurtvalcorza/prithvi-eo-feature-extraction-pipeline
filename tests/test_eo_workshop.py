@@ -120,3 +120,179 @@ def test_isolated_runtime_forwards_the_colab_upload(monkeypatch) -> None:
         assert shown[0]["text/plain"] == "{'scene.tif': b'bytes'}"
     finally:
         runtime.close()
+
+
+# ---- review regressions (EO-M1..M4, EO-m1, EO-m2, EO-m4): the notebook's own helper source, executed with NumPy only ----
+def _cell(cell_id: str) -> str:
+    for cell in _load()["cells"]:
+        if cell.get("id") == cell_id:
+            return "".join(cell["source"])
+    raise AssertionError(f"cell {cell_id} not found")
+
+
+def _helpers() -> dict:
+    """Execute the §4 helper cell (validation, integrity, metrics, output checks) with NumPy and inert stand-ins."""
+    import types
+
+    import numpy as np
+
+    colors = types.SimpleNamespace(ListedColormap=lambda values: values)
+    namespace = {
+        "np": np, "pd": None, "torch": None, "tifffile": None, "hf_hub_download": None, "Path": Path,
+        "matplotlib": types.SimpleNamespace(colors=colors), "plt": None, "IGNORE_INDEX": -1,
+        "S2_L1C_BAND_INDICES": (1, 2, 3, 8, 11, 12),
+    }
+    exec(_cell("7fffe217"), namespace)
+    return namespace
+
+
+def test_foundation_units_are_decided_on_valid_pixels_only() -> None:
+    import numpy as np
+
+    h = _helpers()
+    reflectance = np.full((6, 16, 16), 0.2, np.float32)
+    dn = reflectance * 10_000
+    for a, b in ((reflectance, dn), (reflectance.copy(), dn.copy())):
+        np.testing.assert_allclose(h["validate_foundation_scene"](a, name="r"), h["validate_foundation_scene"](b, name="d"), rtol=1e-6)
+    reflectance[:, 0, 0] = -9999
+    dn[:, 0, 0] = -9999
+    r, d = h["validate_foundation_scene"](reflectance, name="r"), h["validate_foundation_scene"](dn, name="d")
+    np.testing.assert_allclose(r, d, rtol=1e-6)
+    assert float(r[0, 1, 1]) == 2000.0 and float(r[0, 0, 0]) == -9999.0  # valid pixel converted, no-data kept
+    assert h["UNIT_DECISIONS"]["r"]["source_units"] == "reflectance" and h["UNIT_DECISIONS"]["d"]["source_units"] == "dn"
+
+
+def test_revalidation_never_rescales_converted_data() -> None:
+    import numpy as np
+
+    h = _helpers()
+    dark = np.full((18, 224, 224), 0.0001, np.float32)
+    once = h["validate_crop_scene"](dark, name="dark")
+    assert float(once.max()) == 1.0
+    np.testing.assert_array_equal(h["validate_crop_scene"](once, name="again", units="dn"), once)
+    foundation = h["validate_foundation_scene"](np.full((6, 16, 16), 0.0001, np.float32), name="dark foundation")
+    np.testing.assert_array_equal(h["validate_foundation_scene"](foundation, name="again", units="dn"), foundation)
+    chip = h["validate_segmentation_chip"](np.full((6, 512, 512), 2000.0, np.float32), name="chip")
+    np.testing.assert_array_equal(h["validate_segmentation_chip"](chip, name="chip again"), chip)
+
+
+def test_unit_edge_cases_are_explicit() -> None:
+    import numpy as np
+    import pytest
+
+    h = _helpers()
+    negative = np.full((18, 224, 224), 0.1, np.float32)
+    negative[0, 0, 0] = -0.01  # plausible slightly negative surface reflectance
+    assert float(h["validate_crop_scene"](negative, name="negative").max()) == pytest.approx(1000.0)
+    with pytest.raises(ValueError, match="ambiguous"):
+        h["validate_crop_scene"](np.full((18, 224, 224), 40.0, np.float32), name="ambiguous")
+    with pytest.raises(ValueError, match="every pixel is no-data"):
+        h["validate_foundation_scene"](np.full((6, 16, 16), -9999, np.float32), name="empty")
+    with pytest.raises(ValueError, match="no-data"):
+        h["validate_crop_scene"](np.where(negative > 0, 1000.0, -9999).astype(np.float32), name="crop no-data")
+    with pytest.raises(ValueError, match="every pixel is no-data"):
+        h["validate_segmentation_chip"](np.zeros((6, 512, 512), np.float32), name="empty chip")
+    with pytest.raises(ValueError, match="outside the plausible HLS range"):
+        h["validate_foundation_scene"](np.full((6, 16, 16), 50_000, np.float32), name="too bright")
+    declared = h["validate_crop_scene"](np.full((18, 224, 224), 40.0, np.float32), name="declared", units="dn")
+    assert float(declared.max()) == 40.0 and h["UNIT_DECISIONS"]["declared"]["decision"] == "declared"
+
+
+def test_invalid_model_outputs_are_rejected_before_maps_or_metrics() -> None:
+    import numpy as np
+    import pytest
+
+    h = _helpers()
+    invalid, check = h["InvalidModelOutput"], h["check_class_scores"]
+    good = np.zeros((2, 2, 8, 8), np.float32)
+    check(good, name="all background", batch=2, num_classes=2, spatial=(8, 8))  # legitimate finite output passes
+    for bad in (np.full_like(good, np.nan), np.where(good == 0, np.inf, good)):
+        with pytest.raises(invalid, match="NaN or infinite"):
+            check(bad, name="bad", batch=2, num_classes=2, spatial=(8, 8))
+    for shape in ((2, 3, 8, 8), (3, 2, 8, 8), (2, 2, 4, 8), (2, 8, 8)):
+        with pytest.raises(invalid, match="expected class scores"):
+            check(np.zeros(shape, np.float32), name="shape", batch=2, num_classes=2, spatial=(8, 8))
+    with pytest.raises(invalid):
+        h["check_probabilities"](np.full((1, 2, 4, 4), 0.7, np.float32), name="sums")
+    with pytest.raises(invalid):
+        h["check_class_map"](np.array([[0, 13]]), name="domain", num_classes=13)
+    with pytest.raises(invalid):
+        h["check_embedding"](np.full(1024, np.nan, np.float32), name="embedding", dim=1024)
+
+
+def test_fractional_labels_are_rejected() -> None:
+    import numpy as np
+    import pytest
+
+    h = _helpers()
+    with pytest.raises(ValueError, match="whole numbers"):
+        h["validate_label"](np.array([[0.9, 1.9, -1.2]], np.float32), name="fractional", shape=(1, 3), num_classes=2)
+    ok = h["validate_label"](np.array([[0.0, 1.0, -1.0]], np.float32), name="integral", shape=(1, 3), num_classes=2)
+    assert ok.tolist() == [[0, 1, -1]]
+
+
+def test_failed_archive_verification_is_remembered(tmp_path) -> None:
+    import hashlib
+    import io
+    import tarfile
+
+    import pytest
+
+    h = _helpers()
+    data = b"pinned member bytes"
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tf:
+        info = tarfile.TarInfo("nested/chip.tif")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    archive, opens = buffer.getvalue(), []
+
+    class Reader:
+        def __init__(self, url, total):
+            self.io, self.count, self.sha, self.resumes = io.BytesIO(archive), 0, hashlib.sha256(), 0
+            opens.append(url)
+
+        def read(self, n=-1):
+            chunk = self.io.read(n)
+            self.count += len(chunk)
+            self.sha.update(chunk)
+            return chunk
+
+        def close(self):
+            self.io.close()
+
+    h["_ResumableReader"] = Reader
+    wanted = {"nested/chip.tif": (len(data), hashlib.sha256(data).hexdigest())}
+    stream = h["stream_pinned_members"]
+    for _ in range(2):  # a wrong whole-archive digest fails every time; it is never forgotten on retry
+        with pytest.raises(ValueError):
+            stream("synthetic://bad", len(archive), "0" * 64, wanted, tmp_path / "bad")
+    assert len(opens) == 2 and not (tmp_path / "bad" / "chip.tif").exists()
+    good = hashlib.sha256(archive).hexdigest()
+    out = stream("synthetic://good", len(archive), good, wanted, tmp_path / "good", label="good")
+    assert out["nested/chip.tif"].read_bytes() == data and h["ARCHIVE_STATUS"]["good"]["whole_archive_verified"] is True
+    stream("synthetic://good", len(archive), good, wanted, tmp_path / "good", label="good")
+    assert len(opens) == 3  # the verified cache is reused
+    out["nested/chip.tif"].write_bytes(b"corrupted")
+    assert stream("synthetic://good", len(archive), good, wanted, tmp_path / "good")["nested/chip.tif"].read_bytes() == data
+    assert len(opens) == 4
+
+
+def test_byod_destination_is_created_before_any_model_loads() -> None:
+    body = _cell("f23033f9")
+    first_load = min(body.index(f) for f in ("load_foundation_model()", "load_segmentation_model(", "load_crop_model()"))
+    assert body.index("byod_dir.mkdir(") < first_load
+    assert 'OUTPUT_ROOT / "predictions" / BYOD_CAPABILITY' not in body and "receipt.json" in body
+
+
+def test_reconstruction_activity_is_separate_from_the_canonical_result() -> None:
+    canonical, activity, export = _cell("f369c51e"), _cell("guided-controlled-change-run"), _cell("33f19388")
+    assert "75% hidden" not in canonical and 'mask_ratio=CANONICAL_MASK_RATIO' in canonical
+    assert "reconstruction_result =" not in activity and "activities" in activity and "load_foundation_model()" in activity
+    assert "RUN_MASK_RATIO_ACTIVITY = False" in activity  # Run all never executes the activity
+    assert '"mask_ratio": 0.75' not in export and 'reconstruction_result["mask_ratio"]' in export
+
+
+def test_report_packages_only_this_runs_files() -> None:
+    export = _cell("33f19388")
+    assert "make_archive" not in export and "PRODUCED_FILES" in export and "RUN_ID" in export
