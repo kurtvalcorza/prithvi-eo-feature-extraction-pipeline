@@ -193,56 +193,123 @@ Hosted runtimes (Colab, Kaggle) import some packages, such as NumPy, before the 
 
 This notebook therefore leaves the kernel's packages untouched:
 
-1. the first cell installs the exact pins into a separate environment (`dimer_eo_env/`, created with `uv` from the kernel's own Python);
+1. the first cell downloads a pinned `uv` wheel (checked by size and SHA-256), creates a separate environment (`dimer_eo_env/`) on a uv-managed CPython 3.12.12, and installs a hash-locked set of wheels into it (`--require-hashes --only-binary :all:`; the lock is carried in the cell and was compiled from the pins for manylinux x86_64), so the same package versions are installed on every runtime;
 2. the second cell starts one Python process in that environment and routes **every later code cell** to it. Printed output, tables and figures come back to the notebook as usual, variables persist from cell to cell, and an error stops **Run all** exactly as it would in the kernel;
 3. the third cell, the first to run in the isolated environment, records the versions it actually imported.
 
 These first two cells are marked `# dimer: kernel cell` and are the only cells that run in the kernel. If you re-run a single cell later, it still runs in the isolated environment with the variables created so far. To start over, restart the session and choose **Run all**.
 
+**Platform.** The locked environment is built for **Linux x86_64** only (Google Colab, Kaggle or a Linux Jupyter server). On macOS, Windows or ARM the first cell stops with a message instead of installing.
+
 The environment variable `DIMER_NOTEBOOK_CI_PREINSTALLED=1` lets an executor that has already installed exactly these pins run every cell in its own kernel instead. It never selects data or models.
 """)
 
-code("a349a890", r'''
+# The fleet's uv isolated-environment mechanism (ast-audio-classification-pipeline 16eee39, bart-mnli ee128d2): a
+# size- and SHA-256-verified uv wheel, a uv-managed CPython, and a hash lock compiled from the pins in
+# requirements-eo-workshop.in with
+#   uv pip compile tools/eo_workshop/requirements-eo-workshop.in --python-version 3.12 --python-platform
+#   x86_64-manylinux_2_28 --generate-hashes --only-binary :all: --exclude-newer 2026-09-26T00:00:00Z
+#   -o tutorials/requirements-eo-workshop.lock.txt
+# (--exclude-newer keeps the transitive versions to what the 2026-09-26 Colab run of blob 970b0e8b could resolve).
+MANAGED_PYTHON = "3.12.12"
+UV_WHEEL = {
+    "url": "https://files.pythonhosted.org/packages/1e/fd/432451d732917c49152a291de3ef171aa6b0f1a22d39780fb2c1f085ca4c/uv-0.12.15-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    "bytes": 20081404,
+    "sha256": "aee9802f46bae436bd91751bb33ddeb379ef1596b5c19df193219d545d244b60",
+}
+PINS_IN = HERE / "requirements-eo-workshop.in"
+LOCK_FILE = REPO / "tutorials" / "requirements-eo-workshop.lock.txt"
+PIN_LINES = [line.strip() for line in PINS_IN.read_text(encoding="utf-8").splitlines() if line.strip() and not line.startswith("#")]
+LOCK_TEXT = LOCK_FILE.read_text(encoding="utf-8").replace("\r\n", "\n")
+assert '"""' not in LOCK_TEXT and not LOCK_TEXT.rstrip("\n").endswith("\\")  # it is carried inside r"""..."""
+LOCKED_PACKAGES = sum(1 for line in LOCK_TEXT.splitlines() if line[:1].isalnum())
+LOCK_SHA256 = __import__("hashlib").sha256(LOCK_TEXT.encode("utf-8")).hexdigest()
+
+_INSTALL_CELL = r'''
 # @title Install the tested notebook runtime into an isolated environment
 # dimer: kernel cell (runs in the notebook kernel, not in the isolated environment)
+import hashlib
+import io
 import os
-import shutil
+import platform
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
+import zipfile
 from pathlib import Path
 
 PINS = [
-    "torch==2.14.0",
-    "torchvision==0.29.0",
-    "terratorch==1.2.13",
-    "tifffile==2026.9.15",
-    "numpy==2.5.3",
-    "safetensors==0.8.0",
-    "huggingface-hub==1.32.0",
-    "matplotlib>=3.9,<3.11",
-    "pandas>=2.2,<3.0",
+@@PINS@@
 ]
-UV_PIN = "uv==0.8.17"
+MANAGED_PYTHON = "@@MANAGED_PYTHON@@"
+UV_URL = "@@UV_URL@@"
+UV_BYTES = @@UV_BYTES@@
+UV_SHA256 = "@@UV_SHA256@@"
+LOCK_NAME = "requirements-eo-workshop.lock.txt"
+LOCK_SHA256 = "@@LOCK_SHA256@@"
+LOCKED_PACKAGES = @@LOCKED_PACKAGES@@
+# The hash-locked requirements, compiled from the PINS above with `uv pip compile --generate-hashes` for manylinux x86_64.
+LOCK_TEXT = r"""@@LOCK_TEXT@@"""
 
 SKIP_INSTALL = os.environ.get("DIMER_NOTEBOOK_CI_PREINSTALLED") == "1"
 EO_ENV = Path(os.environ.get("DIMER_EO_ENV", "dimer_eo_env")).resolve()
 EO_PYTHON = EO_ENV / "bin" / "python"
+EO_TOOLS = EO_ENV.with_name(EO_ENV.name + "_tools")
 
 if SKIP_INSTALL:
     print("DIMER_NOTEBOOK_CI_PREINSTALLED=1: the pins are already installed; the notebook runs in this kernel.")
 else:
-    uv = shutil.which("uv")
-    if uv is None:
-        # uv is a self-contained binary; installing it does not touch any package this kernel has imported.
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", UV_PIN], check=True)
-        from uv import find_uv_bin
-
-        uv = find_uv_bin()
+    if platform.system() != "Linux" or platform.machine() != "x86_64":
+        raise RuntimeError("This notebook needs a Linux x86_64 runtime (Google Colab, Kaggle or Linux Jupyter): its locked environment is built for manylinux x86_64.")
+    setup_started = time.perf_counter()
+    if hashlib.sha256(LOCK_TEXT.encode("utf-8")).hexdigest() != LOCK_SHA256:
+        raise RuntimeError("The carried lock does not match its digest: regenerate the notebook from the repository instead of editing this cell.")
+    EO_TOOLS.mkdir(parents=True, exist_ok=True)
+    lock_path = EO_TOOLS / LOCK_NAME
+    lock_path.write_text(LOCK_TEXT, encoding="utf-8", newline="\n")
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(UV_URL, timeout=90) as response:
+                wheel = response.read(UV_BYTES + 1)
+            break
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            if attempt == 2:
+                raise
+            time.sleep(2**attempt)
+    if len(wheel) != UV_BYTES or hashlib.sha256(wheel).hexdigest() != UV_SHA256:
+        raise RuntimeError("The pinned uv wheel failed its size/SHA-256 check: refusing to run it. Run this cell again; if it repeats, the download is being altered.")
+    with zipfile.ZipFile(io.BytesIO(wheel)) as archive:
+        member = next(name for name in archive.namelist() if name.endswith(".data/scripts/uv"))
+        uv = EO_TOOLS / "uv"
+        uv.write_bytes(archive.read(member))
+    uv.chmod(0o700)
+    # uv gets no kernel Python path; the managed interpreter is downloaded once and reused on a re-run.
+    uv_env = dict(os.environ)
+    for name in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"):
+        uv_env.pop(name, None)
     if not EO_PYTHON.is_file():
-        subprocess.run([uv, "venv", "--quiet", "--python", sys.executable, str(EO_ENV)], check=True)
-    subprocess.run([uv, "pip", "install", "--quiet", "--python", str(EO_PYTHON), *PINS], check=True)
-    print({"isolated_environment": str(EO_ENV), "python": str(EO_PYTHON)})
-''')
+        subprocess.run([str(uv), "venv", "--quiet", "--managed-python", "--python", MANAGED_PYTHON, str(EO_ENV)], env=uv_env, check=True)
+    eo_version = subprocess.run([str(EO_PYTHON), "-c", "import platform; print(platform.python_version())"], env=uv_env, check=True, capture_output=True, text=True).stdout.strip()
+    if eo_version != MANAGED_PYTHON:
+        raise RuntimeError(f"{EO_ENV} holds Python {eo_version}, not {MANAGED_PYTHON}: delete that folder (or start a fresh runtime) and run this cell again.")
+    subprocess.run([str(uv), "pip", "install", "--quiet", "--python", str(EO_PYTHON), "--require-hashes", "--only-binary", ":all:", "--index-url", "https://pypi.org/simple", "-r", str(lock_path)], env=uv_env, check=True)
+    print({"isolated_environment": str(EO_ENV), "isolated_python": eo_version, "kernel_python": platform.python_version(), "locked_packages": LOCKED_PACKAGES, "setup_seconds": round(time.perf_counter() - setup_started)})
+'''
+for _key, _value in {
+    "PINS": "\n".join(f'    "{pin}",' for pin in PIN_LINES),
+    "MANAGED_PYTHON": MANAGED_PYTHON,
+    "UV_URL": UV_WHEEL["url"],
+    "UV_BYTES": str(UV_WHEEL["bytes"]),
+    "UV_SHA256": UV_WHEEL["sha256"],
+    "LOCK_SHA256": LOCK_SHA256,
+    "LOCKED_PACKAGES": str(LOCKED_PACKAGES),
+    "LOCK_TEXT": LOCK_TEXT,
+}.items():
+    _INSTALL_CELL = _INSTALL_CELL.replace(f"@@{_key}@@", _value)
+assert "@@" not in _INSTALL_CELL
+code("a349a890", _INSTALL_CELL)
 
 code("5d1c7e0a", r'''
 # @title Route the remaining cells to the isolated environment
@@ -401,6 +468,8 @@ class IsolatedRuntime:
         to_kernel_r, to_kernel_w = os.pipe()
         to_worker_r, to_worker_w = os.pipe()
         env = dict(os.environ, MPLBACKEND="Agg", PYTHONUNBUFFERED="1")
+        for name in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"):  # the kernel's paths must not leak into the env
+            env.pop(name, None)
         env["DIMER_KERNEL_IS_COLAB"] = "1" if "google.colab" in sys.modules else "0"
         self.proc = subprocess.Popen(
             [str(python), "-c", _WORKER_SOURCE, str(to_kernel_w), str(to_worker_r)],
@@ -2348,7 +2417,7 @@ experiment_manifest = {
     "notebook_spec": "2.1",
     "notebook_profile": "MULTI-CAPABILITY",
     "notebook_mode": "WORKSHOP",
-    "workshop_revision": "0.2.1-candidate",
+    "workshop_revision": "0.2.2-candidate",
     "run_id": RUN_ID,
     "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     "random_seed": SEED,
@@ -2421,6 +2490,9 @@ md("982c1134", r"""
 
 | Symptom | Likely cause | Corrective action |
 |---|---|---|
+| `This notebook needs a Linux x86_64 runtime` | macOS, Windows or an ARM machine | use Google Colab, Kaggle or a Linux x86_64 Jupyter server; the locked environment has no wheels for other platforms |
+| `dimer_eo_env holds Python …, not 3.12.12` | an environment folder left by an older revision of this notebook | delete `dimer_eo_env/` (or start a fresh runtime) and run the first cell again |
+| `The pinned uv wheel failed its size/SHA-256 check` | an interrupted or altered download | run the first cell again; if it repeats, the download is being altered — do not bypass the check |
 | `The isolated environment's Python process exited` | the worker process in `dimer_eo_env/` crashed, usually out of host memory | restart the session and choose **Run all** again; the variables of the crashed process are gone |
 | CUDA is unavailable | CPU runtime selected | Change to a T4 GPU runtime before running from the top |
 | Size / SHA-256 mismatch on a checkpoint, scene or chip | interrupted or changed asset | delete the cached file (`workshop_cache/` or the Hugging Face cache) and rerun; do not bypass the integrity check |
@@ -2687,8 +2759,13 @@ cells = apply_guided_layer(cells)
 nb = dict(orig)
 nb["cells"] = cells
 nb["metadata"] = dict(orig["metadata"])
-nb["metadata"]["workshop_revision"] = "0.2.1-candidate"
-nb["metadata"]["dimer"] = dict(orig["metadata"]["dimer"]) | {"clean_runtime_evidence": "pending"}
+nb["metadata"]["workshop_revision"] = "0.2.2-candidate"
+nb["metadata"]["dimer"] = dict(orig["metadata"]["dimer"]) | {"clean_runtime_evidence": "pending", "revision_log": [
+    {"revision": "0.2.2-candidate", "date": "2026-10-03", "change": (
+        "uv isolated environment: a size- and SHA-256-pinned uv wheel, a uv-managed CPython 3.12.12 and a hash-locked "
+        "wheel set (--require-hashes --only-binary :all:) replace the unpinned uv and the unhashed PINS install; "
+        "Linux x86_64 only; default data, seeds, models and metrics unchanged")},
+]}
 content = json.dumps(nb, indent=1, ensure_ascii=False) + "\n"
 if _args.check:
     if not OUT.exists() or OUT.read_text(encoding="utf-8") != content:
