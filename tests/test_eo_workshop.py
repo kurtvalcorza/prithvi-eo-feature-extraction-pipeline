@@ -75,7 +75,7 @@ def test_no_runtime_restart_path() -> None:
     install, bridge, verify = _kernel_cells()[:3]
     assert "# dimer: kernel cell" in install and "# dimer: kernel cell" in bridge
     assert "# dimer: kernel cell" not in verify
-    assert '"--python", str(EO_PYTHON), *PINS' in install
+    assert '"--require-hashes", "--only-binary", ":all:"' in install and "*PINS" not in install
     assert sum("# dimer: kernel cell" in cell for cell in _kernel_cells()) == 2
 
 
@@ -301,3 +301,95 @@ def test_report_packages_only_this_runs_files() -> None:
 def test_run_id_survives_rerunning_the_controls_cell() -> None:
     controls = _cell("ba798aab")
     assert 'RUN_ID = globals().get("RUN_ID") or (' in controls
+
+
+# ----- 2026-10-03 uv isolated environment ---------------------------------------------------------------------------
+LOCK = REPO / "tutorials" / "requirements-eo-workshop.lock.txt"
+PINS_IN = REPO / "tools" / "eo_workshop" / "requirements-eo-workshop.in"
+
+
+def _install_namespace() -> dict:
+    """Run only the constant definitions of the install cell (everything before SKIP_INSTALL); nothing is installed."""
+    import ast
+
+    install = _kernel_cells()[0]
+    module = ast.parse(install)
+    keep = []
+    for node in module.body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            if node.targets[0].id == "SKIP_INSTALL":
+                break
+            keep.append(node)
+    namespace: dict = {}
+    exec(compile(ast.Module(body=keep, type_ignores=[]), "install", "exec"), namespace)
+    return namespace
+
+
+def test_no_kernel_install_or_restart_guard() -> None:
+    body = _source()
+    for literal in ["pip install", "%pip", "!pip", "-m\", \"pip", "shutil.which(\"uv\")", "uv==0.8", "Restart session", "restart the runtime and"]:
+        assert literal not in body, literal
+    install = _kernel_cells()[0]
+    assert "--python\", sys.executable" not in install  # the env is not built from the kernel's Python
+
+
+def test_carried_lock_is_the_repository_lock_with_hashes() -> None:
+    import hashlib
+
+    namespace = _install_namespace()
+    lock_text = LOCK.read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert namespace["LOCK_TEXT"] == lock_text
+    assert namespace["LOCK_SHA256"] == hashlib.sha256(lock_text.encode("utf-8")).hexdigest()
+    packages = [line for line in lock_text.splitlines() if line[:1].isalnum()]
+    assert len(packages) == namespace["LOCKED_PACKAGES"] > 50
+    assert all("==" in line and line.endswith(" \\") for line in packages)
+    assert lock_text.count("--hash=sha256:") >= len(packages)
+    assert "--generate-hashes" in lock_text and "--only-binary :all:" in lock_text and "x86_64-manylinux_2_28" in lock_text
+
+
+def test_lock_keeps_the_notebooks_pins() -> None:
+    namespace = _install_namespace()
+    pins = [line.strip() for line in PINS_IN.read_text(encoding="utf-8").splitlines() if line.strip() and not line.startswith("#")]
+    assert namespace["PINS"] == pins
+    locked = {line.split(" ")[0] for line in LOCK.read_text(encoding="utf-8").splitlines() if line[:1].isalnum()}
+    for pin in pins:
+        if "==" in pin:
+            assert pin in locked, pin
+    for exact in ["torch==2.14.0", "torchvision==0.29.0", "terratorch==1.2.13", "numpy==2.5.3", "tifffile==2026.9.15"]:
+        assert exact in locked
+
+
+def test_install_is_hash_locked_wheels_only_on_a_pinned_uv_and_managed_python() -> None:
+    import re
+
+    install = _kernel_cells()[0]
+    namespace = _install_namespace()
+    assert '"--require-hashes", "--only-binary", ":all:"' in install
+    assert '"-r", str(lock_path)' in install
+    assert '"venv", "--quiet", "--managed-python", "--python", MANAGED_PYTHON' in install
+    assert namespace["MANAGED_PYTHON"] == "3.12.12"
+    assert re.fullmatch(r"https://files\.pythonhosted\.org/packages/.+/uv-[0-9.]+-py3-none-manylinux_2_17_x86_64\.manylinux2014_x86_64\.whl", namespace["UV_URL"])
+    assert re.fullmatch(r"[0-9a-f]{64}", namespace["UV_SHA256"]) and namespace["UV_BYTES"] > 1_000_000
+    assert "hashlib.sha256(wheel).hexdigest() != UV_SHA256" in install
+    assert 'platform.system() != "Linux" or platform.machine() != "x86_64"' in install
+    for name in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"):
+        assert name in install
+
+
+def test_model_cells_run_in_the_venv_python() -> None:
+    install, bridge = _kernel_cells()[:2]
+    assert 'EO_PYTHON = EO_ENV / "bin" / "python"' in install
+    assert "IsolatedRuntime(EO_PYTHON)" in bridge
+    assert 'MPLBACKEND="Agg"' in bridge
+    assert 'for name in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"):' in bridge
+
+
+def test_no_cell_line_over_2000_characters() -> None:
+    longest = max(len(line) for cell in _load()["cells"] for line in "".join(cell.get("source", [])).splitlines())
+    assert longest <= 2000, longest
+
+
+def test_revision_log_records_the_uv_migration() -> None:
+    meta = _load()["metadata"]
+    assert meta["workshop_revision"] == "0.2.2-candidate"
+    assert meta["dimer"]["revision_log"][-1]["revision"] == "0.2.2-candidate"
