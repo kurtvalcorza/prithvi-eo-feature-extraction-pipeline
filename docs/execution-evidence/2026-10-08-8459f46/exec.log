@@ -1,0 +1,99 @@
+[colab] Parsing notebook '/home/kurt/colab-runs/prithvi-eo-feature-extraction-pipeline-8459f46-e1ee15/prithvi_eo_feature_extraction_colab_8459f46_colab-cli-t4.ipynb'...
+[colab] Executing cell 1/11 - Infrastructure: build (or reuse) the isolated environment and route later cells to it...
+{'isolated_environment': '/content/dimer_isolated_env_0f2c040bc50a', 'reused': False, 'isolated_python': '3.12.12', 'kernel_python': '3.13.15', 'locked_packages': 131, 'setup_seconds': 64}
+{'routed_to': '/content/dimer_isolated_env_0f2c040bc50a/bin/python', 'worker_pid': 7126, 'worker_reused': False}
+[colab] Executing cell 2/11 - Infrastructure: record the runtime...
+{'notebook_source': {'repository': 'prithvi-eo-feature-extraction-pipeline', 'repository_revision': '77183cdf1db98aa2180c12ad695d6ca1c8db441b', 'embedded_module': 'src/prithvi_eo_feature_extraction_pipeline/pipeline.py', 'embedded_modules': ['src/prithvi_eo_feature_extraction_pipeline/pipeline.py', 'src/prithvi_eo_feature_extraction_pipeline/metrics.py', 'src/prithvi_eo_feature_extraction_pipeline/samples.py'], 'module_sha256': '7e1462af7b9cdc08dca50e3f5af0618d6040435cdb178fdd0cd1e3a0c08ee3fb', 'generator': 'build_notebook.py/2.2', 'notebook_spec': '2.2'}, 'python': '3.12.12', 'executable': '/content/dimer_isolated_env_0f2c040bc50a/bin/python', 'torch': '2.14.0+cu130', 'timm': '1.0.30', 'lightning': '2.6.6', 'tifffile': '2026.9.15', 'cuda': True}
+[colab] Executing cell 3/11 - prithvi_eo_feature_extraction-08...
+[colab] Executing cell 4/11 - prithvi_eo_feature_extraction-10...
+[colab] Executing cell 5/11 - prithvi_eo_feature_extraction-12...
+[colab] Executing cell 6/11 - Infrastructure: stage and digest-verify the pinned snapshot, then load the model...
+{'model_id': 'ibm-nasa-geospatial/Prithvi-EO-2.0-300M', 'revision': '9eb1b1102806593963daa333bcc491b1c6f8562f', 'license': 'apache-2.0', 'files': 7, 'total_bytes': 1338724072}
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+{'weights_dir': '/content/weights/prithvi-eo-2.0-300m', 'fetched': ['Prithvi_EO_V2_300M.pt', 'README.md', 'config.json', 'examples/Mexico_HLS.S30.T13REM.2018026T173609.v2.0_cropped.tif', 'examples/Mexico_HLS.S30.T13REM.2018106T172859.v2.0_cropped.tif', 'examples/Mexico_HLS.S30.T13REM.2018201T172901.v2.0_cropped.tif', 'examples/Mexico_HLS.S30.T13REM.2018266T173029.v2.0_cropped.tif']}
+{'verified_files': 7, 'revision': '9eb1b1102806593963daa333bcc491b1c6f8562f'}
+/content/dimer_isolated_env_0f2c040bc50a/lib/python3.12/site-packages/torch/jit/_script.py:1491: FutureWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+{'conversion': {'source': {'path': 'Prithvi_EO_V2_300M.pt', 'bytes': 1326658396, 'sha256': 'faab2c8b776f0723f93431747603a7ec586a54fc45473613b4322c29752486e7'}, 'audit': {'file': 'Prithvi_EO_V2_300M.pt', 'torch_archive': True, 'pickles': 1, 'globals': ['collections.OrderedDict', 'torch.FloatStorage', 'torch._utils._rebuild_tensor_v2'], 'violations': [], 'audit_sha256': 'e7b998d087a5dcadd37713daf30b63cc571160c3180ebc138500ab662197e932'}, 'checkpoint': {'tensors': 398, 'encoder_tensors': 294, 'decoder_tensors': 104}, 'converted': [{'path': 'prithvi-eo-2.0-300m.safetensors', 'bytes': 1326543456, 'sha256': '15b8ed6dacf8b3ca02c542bb8eaffc92c7a7addc5351b3d967873ad3f73a24b0'}], 'seconds': 32.28}}
+{'device': 'cuda', 'source': 'converted from the manifest-verified source checkpoint'}
+[colab] Executing cell 7/11 - prithvi_eo_feature_extraction-16...
+{'data_source': "HLS Burn Scars scenes (NASA IMPACT / UAH); Hugging Face dataset ibm-nasa-geospatial/hls_burn_scars, 44 scenes selected 2026-09-19 from the model repository's splits; CC BY 4.0 (NASA IMPACT / University of Alabama in Huntsville)", 'splits': {'train': 24, 'validation': 8, 'test': 12}, 'disjoint': {'train': 24, 'validation': 8, 'test': 12}, 'digest': '5994bab13768b0f9...'}
+{'train': {'burn_fraction_pixels': 0.1497, 'patches_labelled': 24397, 'patch_positive_fraction': 0.1501, 'tiles': ['T10SFE', 'T10SGE', 'T10SGG', 'T10TFN', 'T10TFQ', 'T10TGS', 'T10UGU', 'T11SMT', 'T11TPE', 'T12STG', 'T12SYG', 'T12TVK', 'T12TWT', 'T13RGP', 'T13SDT', 'T13SFT', 'T14SLE', 'T15RWQ', 'T15STA', 'T15SWV', 'T16RFU', 'T16SDD', 'T17SLT']}}
+{'validation': {'burn_fraction_pixels': 0.122, 'patches_labelled': 8192, 'patch_positive_fraction': 0.1229, 'tiles': ['T10TFM', 'T11SPV', 'T11TMF', 'T12RXV', 'T13TBE', 'T13TDE', 'T14SMC', 'T15SWA']}}
+{'test': {'burn_fraction_pixels': 0.2131, 'patches_labelled': 12288, 'patch_positive_fraction': 0.2135, 'tiles': ['T10SDH', 'T10SEH', 'T10TFQ', 'T10TFT', 'T10TGS', 'T10TGT', 'T11TPH', 'T12SVD', 'T13REQ', 'T13SDV', 'T13TDL', 'T15SXB']}}
+{'test_tiles_also_in_training': ['T10TFQ', 'T10TGS'], 'validation_tiles_also_in_training': []}
+{'first_test_scene': {'id': 'test-000', 'shape': (6, 512, 512), 'reflectance_range': [0.0, 0.4514], 'has_label': True, 'label_fraction': {'not burned': 0.2066, 'burn scar': 0.7934}, 'ignored_pixels': 4}}
+{'byod_template': 'outputs/prithvi_eo_feature_extraction_byod_template', 'files': ['pairs.csv', 'sample_chip.tif', 'sample_label.tif'], 'rows_reloaded_by_the_byod_loader': 1}
+{'example_stacks': 5, 'shapes': [(6, 1, 448, 560), (6, 4, 448, 560)], 'dates': ['2018026', '2018106', '2018201', '2018266']}
+{'validation': 'record shape, band count, chip size, finiteness, value range and label values only. Nothing checks that the bands are the six HLS bands in the right order, that the reflectance is atmospherically corrected, or that the label was drawn for this chip -- any six-band 512 × 512 array is embedded and probed without complaint'}
+{'probe': 'five-band scene', 'rejected': 'records[0]: image must have shape (6, 512, 512), got (5, 512, 512)'}
+{'probe': 'unknown label class', 'rejected': 'records[0]: label values [7] outside [-1, 0, 1]'}
+{'probe': 'five-date stack', 'rejected': 'records[0]: T must be in 1..4, got 5'}
+[colab] Executing cell 8/11 - prithvi_eo_feature_extraction-19...
+{'seconds': 3.9, 'embedding': 'final (normalised) encoder layer, every patch visible; CLS token and the mean of the patch tokens; float32, unnormalised', 'dim': 1024}
+{'record': 'mexico-T13REM-2018-series', 'frames': 4, 'token_grid': [4, 28, 35], 'cls_norm': 29.05, 'mean_norm': 26.18}
+{'record': 'mexico-T13REM-2018026', 'frames': 1, 'token_grid': [1, 28, 35], 'cls_norm': 28.96, 'mean_norm': 26.88}
+{'record': 'mexico-T13REM-2018106', 'frames': 1, 'token_grid': [1, 28, 35], 'cls_norm': 28.96, 'mean_norm': 26.82}
+{'record': 'mexico-T13REM-2018201', 'frames': 1, 'token_grid': [1, 28, 35], 'cls_norm': 28.97, 'mean_norm': 26.66}
+{'record': 'mexico-T13REM-2018266', 'frames': 1, 'token_grid': [1, 28, 35], 'cls_norm': 28.99, 'mean_norm': 26.08}
+{'cosine_cls_between_dates': [[1.0, 0.9990000128746033, 0.9990000128746033, 0.9990000128746033], [0.9990000128746033, 1.0, 1.0, 0.9990000128746033], [0.9990000128746033, 1.0, 1.0, 0.9990000128746033], [0.9990000128746033, 0.9990000128746033, 0.9990000128746033, 1.0]]}
+{'cosine_mean_between_dates': [[1.0, 0.9919999837875366, 0.9819999933242798, 0.9779999852180481], [0.9919999837875366, 1.0, 0.9950000047683716, 0.9760000109672546], [0.9819999933242798, 0.9950000047683716, 1.0, 0.9850000143051147], [0.9779999852180481, 0.9760000109672546, 0.9850000143051147, 1.0]]}
+{'record': 'mexico-T13REM-2018-series', 'masked_fraction': 0.75, 'masked_mse': 0.077295, 'baseline_mean_fill_mse': 0.129382}
+{'record': 'mexico-T13REM-2018026', 'masked_fraction': 0.75, 'masked_mse': 0.054038, 'baseline_mean_fill_mse': 0.068556}
+{'record': 'mexico-T13REM-2018106', 'masked_fraction': 0.75, 'masked_mse': 0.104513, 'baseline_mean_fill_mse': 0.12791}
+{'record': 'mexico-T13REM-2018201', 'masked_fraction': 0.75, 'masked_mse': 0.095279, 'baseline_mean_fill_mse': 0.172112}
+{'record': 'mexico-T13REM-2018266', 'masked_fraction': 0.75, 'masked_mse': 0.076146, 'baseline_mean_fill_mse': 0.141562}
+{'metric': 'MSE over the masked patches in standardised units (the pretraining loss), against a mean-fill baseline', 'written': ['outputs/prithvi_eo_feature_extraction_reconstruction_rgb_date0.tif', 'outputs/prithvi_eo_feature_extraction_reconstruction_mask_date0.tif']}
+<Figure size 1200x400 with 3 Axes>
+
+[Image saved to: /tmp/tmpie8vb6kz.png]
+{'seconds': 6.9, 'metric': 'patch-level (16 × 16 pixels) IoU / F1 over the labelled patches of the held-out chips'}
+{'baseline_not_burned_test': {'iou': {'not burned': 0.7865, 'burn scar': 0.0}, 'accuracy': 0.7865, 'f1': 0.0}}
+{'frozen_test_zero_head': {'iou': {'not burned': 0.7865, 'burn scar': 0.0}, 'mean_iou': 0.3932, 'accuracy': 0.7865, 'f1': 0.0}}
+{'frozen_validation_zero_head': {'iou': {'not burned': 0.8771, 'burn scar': 0.0}, 'f1': 0.0}}
+[colab] Executing cell 9/11 - prithvi_eo_feature_extraction-22...
+{'epoch': 0, 'train_loss': None, 'val_loss': 0.6931, 'val_burn_iou': 0.0, 'val_f1': 0.0, 'note': 'zero head (majority baseline)'}
+{'epoch': 5, 'train_loss': 0.2163, 'val_loss': 0.3812, 'val_burn_iou': 0.4374, 'val_f1': 0.6086}
+{'epoch': 10, 'train_loss': 0.1356, 'val_loss': 0.2727, 'val_burn_iou': 0.5344, 'val_f1': 0.6966}
+{'epoch': 15, 'train_loss': 0.106, 'val_loss': 0.2558, 'val_burn_iou': 0.5493, 'val_f1': 0.7091}
+{'epoch': 20, 'train_loss': 0.088, 'val_loss': 0.2307, 'val_burn_iou': 0.5795, 'val_f1': 0.7338}
+{'epoch': 25, 'train_loss': 0.0761, 'val_loss': 0.214, 'val_burn_iou': 0.5982, 'val_f1': 0.7486}
+{'epoch': 30, 'train_loss': 0.0674, 'val_loss': 0.1996, 'val_burn_iou': 0.61, 'val_f1': 0.7577}
+{'trainable_parameters': 2050, 'encoder_parameters_frozen': 330419712, 'features': 'patch tokens of frozen encoder block 11 (zero-based), standardised with the training-set mean and std', 'train_patches': 24397, 'positive_fraction_train': 0.1501, 'steps': 180, 'best_epoch': 30, 'loss': 'cross-entropy', 'seconds': 11.5}
+[colab] Executing cell 10/11 - prithvi_eo_feature_extraction-25...
+{'mean_iou': {'baseline_not_burned': 0.3932, 'frozen_zero_head': 0.3932, 'probe': 0.8785}}
+{'accuracy': {'baseline_not_burned': 0.7865, 'frozen_zero_head': 0.7865, 'probe': 0.9539}}
+{'precision': {'baseline_not_burned': 0.0, 'frozen_zero_head': 0.0, 'probe': 0.8504}}
+{'recall': {'baseline_not_burned': 0.0, 'frozen_zero_head': 0.0, 'probe': 0.9512}}
+{'f1': {'baseline_not_burned': 0.0, 'frozen_zero_head': 0.0, 'probe': 0.898}}
+{'burn_iou': {'baseline_not_burned': 0.0, 'frozen_zero_head': 0.0, 'probe': 0.8149}}
+{'verdict': {'probe_vs_majority_baseline_burn_iou': 'improved'}}
+{'validation_burn_iou': {'zero_head': 0.0, 'probe': 0.61}, 'validation_loss': {'zero_head': 0.6931473016738892, 'kept_epoch': 0.19959670305252075}}
+{'report': 'outputs/prithvi_eo_feature_extraction_evaluation_report.json'}
+[colab] Executing cell 11/11 - prithvi_eo_feature_extraction-28...
+{'scene': 'T10SDH.2020248.v1', 'burn_fraction_patches_label': 0.797, 'burn_fraction_patches_probe': 0.7266, 'resolution': 'one prediction per 16 × 16 pixel patch'}
+{'scene': 'T10SEH.2018190.v1', 'burn_fraction_patches_label': 0.792, 'burn_fraction_patches_probe': 0.7979, 'resolution': 'one prediction per 16 × 16 pixel patch'}
+{'scene': 'T10TFQ.2018245.v1', 'burn_fraction_patches_label': 0.029, 'burn_fraction_patches_probe': 0.0605, 'resolution': 'one prediction per 16 × 16 pixel patch'}
+{'scene': 'T10TFT.2018213.v1', 'burn_fraction_patches_label': 0.057, 'burn_fraction_patches_probe': 0.0801, 'resolution': 'one prediction per 16 × 16 pixel patch'}
+<Figure size 1000x1360 with 12 Axes>
+
+[Image saved to: /tmp/tmpkhamlniv.png]
+{'artifact': 'outputs/prithvi_eo_feature_extraction_adapter', 'format': 'org.valcorza.prithvi-eo-feature-extraction.probe.v1', 'trainable': 'probe', 'feature_layer': 11, 'tensors': ['feature_mean', 'feature_std', 'probe.bias', 'probe.weight'], 'bytes': 16720, 'sha256': '107e525a9e5b34b4...'}
+{'reload_parity': {'positive_iou_diff': 0.0, 'metrics_identical': True, 'max_abs_score_diff': 0.0}, 'reloaded_best_epoch': 30, 'reloaded_feature_layer': 11}
+outputs/:
+  - outputs/prithvi_eo_feature_extraction_adapter/adapter.safetensors (16.3 KB)
+  - outputs/prithvi_eo_feature_extraction_adapter/manifest.json (20.1 KB)
+  - outputs/prithvi_eo_feature_extraction_byod_template/pairs.csv (0.3 KB)
+  - outputs/prithvi_eo_feature_extraction_byod_template/sample_chip.tif (6144.4 KB)
+  - outputs/prithvi_eo_feature_extraction_byod_template/sample_label.tif (512.3 KB)
+  - outputs/prithvi_eo_feature_extraction_embeddings.json (216.4 KB)
+  - outputs/prithvi_eo_feature_extraction_evaluation_report.json (28.8 KB)
+  - outputs/prithvi_eo_feature_extraction_predictions.json (0.9 KB)
+  - outputs/prithvi_eo_feature_extraction_probe_map_T10SDH.2020248.v1.tif (1.2 KB)
+  - outputs/prithvi_eo_feature_extraction_probe_map_T10SEH.2018190.v1.tif (1.2 KB)
+  - outputs/prithvi_eo_feature_extraction_probe_map_T10TFQ.2018245.v1.tif (1.2 KB)
+  - outputs/prithvi_eo_feature_extraction_probe_map_T10TFT.2018213.v1.tif (1.2 KB)
+  - outputs/prithvi_eo_feature_extraction_reconstruction_mask_date0.tif (245.2 KB)
+  - outputs/prithvi_eo_feature_extraction_reconstruction_rgb_date0.tif (735.3 KB)
+  - outputs/prithvi_eo_feature_extraction_result.json (4.3 KB)
+[colab] Saving notebook with outputs to '/home/kurt/colab-runs/prithvi-eo-feature-extraction-pipeline-8459f46-e1ee15/prithvi_eo_feature_extraction_colab_8459f46_colab-cli-t4_output.ipynb'...
