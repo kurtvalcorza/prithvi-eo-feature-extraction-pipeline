@@ -1,6 +1,6 @@
 """Static release-asset validation for the Prithvi-EO-2.0-300M feature-extraction DIMER pipeline.
 
-Checks the STANDALONE tutorial notebook (DIMER Notebook Specification 2.0 §4), the tutorial
+Checks the STANDALONE tutorial notebook (DIMER Notebook Specification 2.2 §4), the tutorial
 registry, model card, README, STATUS.md and weight documentation for source conformance and
 cross-document identity consistency, and runs the generator parity checks (PAR1-PAR3).
 
@@ -34,9 +34,7 @@ MODEL_LOAD_EXPR = (
 KNOWN_SHAS: frozenset[str] = frozenset({"1864285e25010d346a842e4f068b1a1d4248ed6d"})
 BYOD_GATES = ("USE_BYOD",)
 EXPECTED_OUTPUTS = (
-    "outputs/prithvi_eo_feature_extraction_sample_chip.tif",
-    "outputs/prithvi_eo_feature_extraction_sample_label.tif",
-    "outputs/prithvi_eo_feature_extraction_sample_pairs.csv",
+    "outputs/prithvi_eo_feature_extraction_byod_template",
     "outputs/prithvi_eo_feature_extraction_embeddings.json",
     "outputs/prithvi_eo_feature_extraction_reconstruction_rgb_date0.tif",
     "outputs/prithvi_eo_feature_extraction_evaluation_report.json",
@@ -54,7 +52,15 @@ CODE_MARKERS = (
     "splits = fetch_sample_dataset(cache_dir='weights/hls-burn-scars')",
     "splits = split_dataset(load_byod_dataset(byod_path), seed=0)",
     "dataset_report = dataset_manifest(",
-    "write_sample_pair(test_records[0], 'outputs/prithvi_eo_feature_extraction_sample_chip.tif', 'outputs/prithvi_eo_feature_extraction_sample_label.tif')",
+    "write_sample_pair(test_records[0], byod_template / 'sample_chip.tif', byod_template / 'sample_label.tif')",
+    # Review fixes (2026-10-02 review, FX-M2 / FX-m1 / FX-m2 / FX-m3): stale exports cleared, BYOD-safe names, the
+    # stated minimum printed, the refusal probes padded, the train/test tile overlap printed, a loadable BYOD template
+    "for stale in sorted(Path('outputs').glob('prithvi_eo_feature_extraction_*')):",
+    "scene_name = lambda record: re.sub(r'[^A-Za-z0-9._-]+', '_', str(record.get('source_id', record['id'])))",
+    "'minimum_chips': byod_minimum_records()",
+    "probe_fill = (test_records[1:] + train_records + val_records)[:MIN_RECORDS - 1]",
+    "'test_tiles_also_in_training'",
+    "'rows_reloaded_by_the_byod_loader': len(load_byod_dataset(byod_template))",
     "stack_report = validate_stacks([series_record, *frame_records])",
     "validate_dataset(records)",
     # Stage 5: embeddings, masked reconstruction with the mean-fill baseline, the zero head = majority baseline
@@ -124,10 +130,10 @@ INSTALL_CELL_MARKER = "# dimer: kernel cell"
 # ---------------------------------------------------------------------------
 # Shared checks. Everything below is source/structure validation only. Passing
 # these checks is NOT clean-runtime execution evidence under DIMER Notebook
-# Specification 2.0; see docs/release-verification.md for the release gate.
+# Specification 2.2; see docs/release-verification.md for the release gate.
 # ---------------------------------------------------------------------------
 
-NOTEBOOK_SPEC = "2.0"
+NOTEBOOK_SPEC = "2.2"
 ALLOWED_PROFILES = {"E2E", "ARTIFACT-INFERENCE", "TASK-INFERENCE", "MULTI-CAPABILITY", "SMOKE"}
 STATUS_TOKENS = ("Candidate", "Release-grade")
 PLACEHOLDER = re.compile(r"\b(TODO|TBD|FIXME)\b|Insert text here|Tooltip:", re.I)
@@ -223,6 +229,7 @@ FORBIDDEN_PATTERNS = (
         ),
     ),
     ("archive extractall", re.compile(r"\.extractall\s*\(")),
+    ("sample-only key indexed on a record (FX-M2: BYOD records have no source_id)", re.compile(r"record\[['\"]source_id['\"]\]")),
     ("notebook magic or shell escape", re.compile(r"(?m)^\s*[%!]|get_ipython\(\)")),
 )
 

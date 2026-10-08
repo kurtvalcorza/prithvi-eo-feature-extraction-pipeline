@@ -78,8 +78,10 @@ Before changing the registry status from `Candidate` to `Release-grade`:
 4. verify that Section 1 reports `NOTEBOOK_SOURCE.repository_revision` equal to the revision recorded in
    `metadata.dimer.generated_from` and that the installed core package versions equal the inline `PINS`
    (= `pyproject.toml`): `torch==2.14.0`, `torchvision==0.29.0`, `terratorch==1.2.13`, `tifffile==2026.9.15`,
-   `numpy==2.5.3`, `safetensors==0.8.0`, `huggingface-hub==1.32.0` (an interpreter restart after the install is
-   expected where the runtime's preinstalled torch or numpy differ from the pins);
+   `numpy==2.5.3`, `safetensors==0.8.0`, `huggingface-hub==1.32.0`. Since generator /2.2 the pins come from the
+   hash lock `tutorials/requirements-colab.lock.txt` and are installed into an isolated uv environment, never into
+   the kernel: `Run all` must complete in **one pass with no restart** (RUN1, RUN10, ENV6); a run that needed a
+   restart is not release evidence (review FX-M1);
 5. verify every default-path stage completes:
    - pinned runtime installed from the inline `PINS` with no GitHub access;
    - the three carried module cells execute (defining `PrithviFeaturePipeline`, `audit_pickle`, `convert_model`,
@@ -182,4 +184,4 @@ registry row stays Candidate.
 
 ## Current status
 
-**Release-grade.** The `E2E` notebook blob `6a12fd2e` (committed at `e611e93`) executed top-to-bottom in a clean Kaggle Tesla T4 runtime on 2026-09-25 (10/10 ok (1 restart after install cell), 437.5 s, 110 files, 5611 MB fetched and digest-verified inside the notebook, the checkpoint converted in the notebook) with no repository checkout — the REL1/REL10 supported-runtime evidence this file gates on. The local pre-flight rows above are what preceded it and remain history. Any later change to the carried modules or to the notebook produces a new blob, and the registry returns to **Candidate** until a clean run of that blob is recorded here.
+**Candidate.** The tutorial was regenerated (generator `build_notebook.py/2.2`: isolated uv environment from a hash lock, no in-kernel install; the 2026-10-05 sweep fixes; the 2026-10-02 review fixes FX-M1..M4 / FX-m1..m6; the `google.colab` stub spec fix), so it is a new blob with no hosted record yet (REL14). History: the blob `6a12fd2e` (committed at `e611e93`) executed in a clean Kaggle Tesla T4 runtime on 2026-09-25 (10/10 ok only after 1 restart after the install cell, 437.5 s, 110 files, 5611 MB fetched and digest-verified inside the notebook, the checkpoint converted in the notebook) with no repository checkout and was then marked Release-grade; a two-pass run does not meet RUN1/RUN10/ENV6, so that label is withdrawn (review FX-M1). The local pre-flight rows above are what preceded it and remain history. Any later change to the carried modules or to the notebook produces a new blob, and the registry returns to **Candidate** until a clean run of that blob is recorded here.

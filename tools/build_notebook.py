@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a STANDALONE DIMER tutorial notebook (NOTEBOOK_SPEC 2.0 §4) from repository sources — /2.2.
+"""Generate a STANDALONE DIMER tutorial notebook (NOTEBOOK_SPEC 2.2 §4) from repository sources — /2.2.
 
 /2 adds to /1: multi-module packages (one tagged cell per module, topologically ordered, package-relative
 imports removed), template-declared rewrite rules, and extra pinned snapshots (`extra_weights`) for packages
@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any
 
 GENERATOR_VERSION = "build_notebook.py/2.2"
-NOTEBOOK_SPEC = "2.0"
+NOTEBOOK_SPEC = "2.2"
 
 # ST2: default rewrite rule; a template may replace it with its own `rewrites` list. Every rule must
 # match exactly once across the embedded modules, so a silent no-op is impossible.
@@ -263,14 +263,23 @@ if os.environ.get("DIMER_KERNEL_IS_COLAB") == "1":
             raise RuntimeError("The notebook kernel could not open the upload dialog.")
         return reply[1]
 
+    import importlib.machinery
+
+    def _stub(name, package):
+        # A spec on every stub: importlib.util.find_spec("google.colab") (accelerate does this) raises on a None __spec__.
+        module = types.ModuleType(name)
+        module.__spec__ = importlib.machinery.ModuleSpec(name, None, is_package=package)
+        if package:
+            module.__path__ = []
+        return module
+
     try:
         import google
     except ImportError:
-        google = types.ModuleType("google")
-        google.__path__ = []
+        google = _stub("google", True)
         sys.modules["google"] = google
-    _colab = types.ModuleType("google.colab")
-    _files = types.ModuleType("google.colab.files")
+    _colab = _stub("google.colab", True)
+    _files = _stub("google.colab.files", False)
     _files.upload = _upload
     _colab.files = _files
     google.colab = _colab
@@ -782,7 +791,7 @@ def _md(source: str) -> dict[str, Any]:
 def _code(source: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"cell_type": "code", "execution_count": None, "id": "", "metadata": metadata or {}, "outputs": [], "source": source.rstrip("\n")}
 
-# NOTEBOOK_SPEC 2.0 §3.4/§28 declarations. A template MAY override `mode`, `run_all` and `byod`;
+# NOTEBOOK_SPEC 2.2 §3.4/§28 declarations. A template MAY override `mode`, `run_all` and `byod`;
 # E2E and ARTIFACT-INFERENCE templates MUST state `run_all` themselves (their default paths differ).
 MODES = ("REFERENCE", "GUIDED", "WORKSHOP")
 _RUN_ALL_DEFAULT = {
@@ -791,14 +800,14 @@ _RUN_ALL_DEFAULT = {
         "pinned snapshot, obtains the tutorial sample automatically, validates it into an input manifest before the model "
         "runs, runs the task locally in this kernel, writes the evaluation report, and exports machine-readable outputs "
         "with provenance. The default path needs no repository clone, no DIMER worker or service, no credential, no upload "
-        "dialog and no configuration edit (NOTEBOOK_SPEC 2.0 §5)."
+        "dialog and no configuration edit (NOTEBOOK_SPEC 2.2 §5)."
     ),
     "MULTI-CAPABILITY": (
         "Selecting **Run all** in a fresh supported runtime installs the pinned dependencies, stages and digest-verifies the "
         "pinned snapshot, obtains the tutorial sample automatically, validates it into an input manifest before the model "
         "runs, runs every demonstrated capability locally in this kernel with its own input/output contract, writes the "
         "evaluation report, and exports machine-readable outputs with provenance. The default path needs no repository "
-        "clone, no DIMER worker or service, no credential, no upload dialog and no configuration edit (NOTEBOOK_SPEC 2.0 §5)."
+        "clone, no DIMER worker or service, no credential, no upload dialog and no configuration edit (NOTEBOOK_SPEC 2.2 §5)."
     ),
 }
 _BYOD_DEFAULT = (
