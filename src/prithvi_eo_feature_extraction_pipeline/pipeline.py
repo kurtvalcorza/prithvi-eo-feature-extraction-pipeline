@@ -455,7 +455,7 @@ def _check_record(record: Any, index: int) -> dict[str, Any]:
         if not found <= allowed:
             raise ValueError(f"{label_name}: label values {sorted(found - allowed)} outside {sorted(allowed)}")
         item["label"] = np.ascontiguousarray(mask.astype(np.int64))
-    for key in ("split", "region", "source", "source_id"):
+    for key in ("split", "region", "source", "source_id", "group"):  # group: the BYOD fire / tile id (FX-m2)
         if key in record:
             item[key] = record[key]
     return item
