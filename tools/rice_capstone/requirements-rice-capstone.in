@@ -1,0 +1,14 @@
+# Rice capstone isolated environment (CPython 3.12.12, manylinux x86_64). The model pins match the repository's
+# pyproject and the EO workshop lock; h5py reads the teaching chips, lightgbm is baseline B, kagglehub fetches the
+# public dataset anonymously, tifffile writes the GeoTIFF exports.
+torch==2.14.0
+torchvision==0.29.0
+terratorch==1.2.13
+tifffile==2026.9.15
+numpy==2.5.3
+safetensors==0.8.0
+huggingface-hub==1.32.0
+h5py==3.16.0
+lightgbm==4.7.0
+kagglehub==1.0.2
+matplotlib>=3.9,<3.11
