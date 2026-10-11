@@ -1,0 +1,736 @@
+# ruff: noqa: E501  (learner-facing markdown is kept as one line per paragraph)
+"""Generate tutorials/DIMER_Philippines_Rice_Mapping_Capstone.ipynb deterministically (E2E, WORKSHOP, standalone).
+
+    python tools/rice_capstone/build_capstone.py          # write the notebook
+    python tools/rice_capstone/build_capstone.py --check  # exit 1 if the committed notebook differs
+
+The notebook carries, byte-identical and hash-verified: this directory's `capstone.py` (the stage runner), the
+repository's `pipeline.py` verbatim as `prithvi_pipeline.py` (audit, conversion, strict load), the hash lock
+`tutorials/requirements-rice-capstone.lock.txt`, the model snapshot manifest and a dataset pin manifest. It is written
+output-free. Do not edit the notebook by hand; edit this file or the carried sources and regenerate.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parents[1]
+NOTEBOOK = REPO / "tutorials" / "DIMER_Philippines_Rice_Mapping_Capstone.ipynb"
+LOCK = REPO / "tutorials" / "requirements-rice-capstone.lock.txt"
+PIPELINE = REPO / "src" / "prithvi_eo_feature_extraction_pipeline" / "pipeline.py"
+WEIGHT_MANIFEST = REPO / "weights" / "prithvi-eo-2.0-300m" / "dimer-base-manifest.json"
+GENERATOR = "tools/rice_capstone/build_capstone.py"
+UV_WHEEL = {  # identical to the EO workshop's pinned uv (tools/eo_workshop/build_workshop.py)
+    "url": "https://files.pythonhosted.org/packages/1e/fd/432451d732917c49152a291de3ef171aa6b0f1a22d39780fb2c1f085ca4c/"
+    "uv-0.12.15-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    "bytes": 20081404,
+    "sha256": "aee9802f46bae436bd91751bb33ddeb379ef1596b5c19df193219d545d244b60",
+}
+MANAGED_PYTHON = "3.12.12"
+DATA_MANIFEST = {
+    "slug": "kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching",
+    "version": 1,
+    "url": "https://www.kaggle.com/datasets/kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching",
+    "license": "CC BY 4.0 (component terms in RIGHTS.md continue to apply)",
+    "access": "public; anonymous download, no credential",
+    "index_sha256": "e92bbb9f20d1f7efb225d568e2a44a6ae3d59faab9079590e2dfad780458344d",
+    "package_sha256": {
+        "data-train.zip": "74458ba9f3322705b3c0aed62e5d4a63590804233882a0e7ba5719cfc9596a52",
+        "data-validation.zip": "4af5c646c9888bce39b2c8a2a2a0e709d8dc01b1609c67ad0c212553038beaa7",
+        "development-example.zip": "3d4e8de06ba0d8fd7450d2a9bcc6da07dbd23c5a8ae289104a6fc8584155a823",
+        "INDEX.jsonl": "e92bbb9f20d1f7efb225d568e2a44a6ae3d59faab9079590e2dfad780458344d",
+        "RIGHTS.md": "8ed21cab21cc5b5771545f9be0fb32e15e487e661a90a57ab68ee94f0fb94b56",
+    },
+    "chips": {"train": 32, "validation": 8},
+    "keys_used": ["S2", "S2_valid", "label"],
+    "keys_never_used": ["label_raw", "AlphaEarth", "AE_valid", "granule_count"],
+}
+PIECE = 1000  # at most this many characters per carried string piece, so no cell line is unreadably long
+
+
+def _read(path: Path) -> str:
+    return path.read_bytes().decode("utf-8").replace("\r\n", "\n")
+
+
+def carried_files() -> dict[str, str]:
+    files = {
+        "capstone.py": _read(HERE / "capstone.py"),
+        "prithvi_pipeline.py": _read(PIPELINE),
+        "requirements.txt": _read(LOCK),
+        "weights/prithvi-eo-2.0-300m/dimer-base-manifest.json": _read(WEIGHT_MANIFEST),
+        "data_manifest.json": json.dumps(DATA_MANIFEST, indent=2, sort_keys=True) + "\n",
+    }
+    hashes = {k: hashlib.sha256(v.encode("utf-8")).hexdigest() for k, v in files.items()}
+    files["source.json"] = json.dumps({
+        "repository": "kurtvalcorza/prithvi-eo-feature-extraction-pipeline",
+        "notebook": "tutorials/" + NOTEBOOK.name, "generator": GENERATOR, "carried_sha256": hashes,
+        "pipeline_source": "src/prithvi_eo_feature_extraction_pipeline/pipeline.py (verbatim)",
+    }, indent=2, sort_keys=True) + "\n"
+    return files
+
+
+def _literal(text: str) -> str:
+    pieces: list[str] = []
+    for line in text.splitlines(keepends=True):
+        while len(line) > PIECE:
+            pieces.append(line[:PIECE])
+            line = line[PIECE:]
+        pieces.append(line)
+    return "(\n" + "".join(f"        {piece!r}\n" for piece in pieces) + "    )"
+
+
+def carrier_cell(files: dict[str, str]) -> str:
+    hashes = {k: hashlib.sha256(v.encode("utf-8")).hexdigest() for k, v in files.items()}
+    body = ["# @title Infrastructure: write and verify the embedded source, lock and manifests", "CARRIED_FILES = {"]
+    body += [f"    {name!r}: {_literal(text)}," for name, text in files.items()]
+    body += ["}", "CARRIED_HASHES = {"]
+    body += [f"    {name!r}: {digest!r}," for name, digest in hashes.items()]
+    body += ["}", "for name, text in CARRIED_FILES.items():",
+             "    data = text.encode('utf-8')",
+             "    if hashlib.sha256(data).hexdigest() != CARRIED_HASHES[name]:",
+             "        raise RuntimeError(f'{name}: embedded text does not match its pinned SHA-256; regenerate the notebook')",
+             "    target = ROOT / name",
+             "    target.parent.mkdir(parents=True, exist_ok=True)",
+             "    target.write_bytes(data)",
+             "print(f'{len(CARRIED_FILES)} carried files written and verified under {ROOT}')"]
+    return "\n".join(body)
+
+
+# --------------------------------------------------------------------------------------------------
+# learner-facing and infrastructure cells
+# --------------------------------------------------------------------------------------------------
+
+TITLE = r"""# Rice From Space: What Does a Satellite Foundation Model Add?
+
+**DIMER Philippines Rice Mapping Capstone** · **Profile:** `E2E` · **Mode:** `WORKSHOP` · **Notebook standard:** DIMER Notebook Specification `2.3` · **Release status:** Candidate · **Model:** `ibm-nasa-geospatial/Prithvi-EO-2.0-300M` @ `9eb1b1102806` · **Data:** Kaggle `kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching`, version 1
+
+**Driving question:** Given 32 labelled Sentinel-2 chips, does a head trained on frozen Prithvi-EO-2.0 features map Philippine rice better than a hand-built spectral-temporal baseline, and what can 8 validation chips actually establish?
+
+Rice paddies change through the year: fields are flooded, the crop greens up, and then it is harvested. Optical satellites see that cycle as a pattern over time, not in a single image (Xiao et al., 2005). In this notebook you will compare three ways of turning a year of Sentinel-2 observations (Drusch et al., 2012) into a rice map, and practise stating only what a small, clustered evaluation can support. It is an optional capstone after the *Rice from space* course lessons L3 (Sentinel-2 LightGBM) and L3B (AlphaEarth LightGBM); it links to them rather than re-teaching feature engineering.
+
+**Who this notebook is for.** Learners who can open a hosted notebook, run cells in order and read short Python. No prior remote-sensing or deep-learning experience is assumed: each geospatial or evaluation term is explained at first use, and the glossary below collects them.
+
+**Prerequisites and runtime.** A fresh Google Colab session with a **T4 GPU** (Runtime → Change runtime type → T4 GPU) and at least 12 GiB free disk. No account, token, upload, DIMER service or Git clone is needed. The notebook downloads the public teaching dataset (about 350 MB), the 1.33 GB model checkpoint and a hash-locked Python 3.12.12 environment (Linux x86_64 only). Runtime and GPU memory are measured by the run and recorded, not promised here.
+
+**Input → System → Output.** A year of six-band Sentinel-2 surface reflectance for a 2.56 km chip (24 calendar bins, 20 m pixels) → one of three systems: **A** call everything non-rice, **B** a LightGBM model on hand-built spectral-temporal features, or **C** a small head on frozen Prithvi-EO-2.0 features (Szwarcman et al., 2026) → a 0/1 rice map scored against a published rice map. The trained head is exported, reloaded in a fresh process and can score your own chips.
+
+### Learning objectives
+
+By the end of this notebook you will be able to:
+
+1. **Explain** Sentinel-2 bands, 20 m pixels, cloud gaps and temporal compositing, and why rice is a temporal signal.
+2. **Build** the input a pretrained model expects — four quarterly frames, standardised, gaps filled — without resizing, and **identify** what was filled.
+3. **Train** a small head on frozen features and **compare** it with two baselines under a frozen protocol.
+4. **Interpret** pooled precision, recall, F1 and IoU for a minority class, and **explain** why accuracy hides failure.
+5. **Run** one controlled experiment (one frame versus four) and **explain** the result.
+6. **Write** a bounded conclusion that states its evidence, its uncertainty and what it cannot claim.
+
+### How to use this notebook
+
+- **Run all** from a fresh T4 runtime (Runtime → Run all). Every cell runs in order without editing; nothing asks for input, and no manual restart is needed. The optional fine-tuning and bring-your-own-data sections are switched off by default.
+- **Infrastructure** cells are collapsed and titled *Infrastructure*. They make the run reproducible. You may run them without studying their implementation; they are not learning objectives.
+- Sections are tagged **[Concept]**, **[Evaluation practice]** or **[Engineering]**.
+- Before each result you will be asked to **predict**. Write your prediction down first. After each result, **What to notice** describes normal output, and a collapsed **Check your reasoning** box holds a sample answer: open it only after answering.
+- Completion notes are optional personal learning aids, **not required submissions**.
+
+### Roadmap
+
+| Section | What you do | Kind |
+|---|---|---|
+| 1 | Prepare a reproducible, isolated runtime | Engineering |
+| 2 | Inspect the chips: bands, gaps, the rice season, the labels | Concept |
+| 3 | Predict, declare the protocol, and run baselines A and B | Evaluation practice |
+| 4 | Build Prithvi's input and extract frozen features | Concept |
+| 5 | Train head C on the fit chips; choose epoch and threshold on development | Concept |
+| 6 | Change one thing: one frame versus four | Evaluation practice |
+| 7 | Optional extension: fine-tune the encoder (off by default) | Evaluation practice |
+| 8 | Score A, B and C once on the validation chips | Evaluation practice |
+| 9 | Interpret: pooled and per-chip results, error maps, the 320 m patch effect | Evaluation practice |
+| 10 | Export, reload in a fresh process and verify | Engineering |
+| 11 | Conclude with evidence | Evaluation practice |
+| 12 | Optional: bring your own chips | Engineering |
+
+**Evidence boundary.** 40 chip-years: 32 for training, 8 for validation, all validation chips from two regions (Central and Eastern Visayas). This is a teaching comparison, not a national accuracy estimate, and it is Candidate until a hosted run of this exact notebook is recorded."""
+
+GLOSSARY = r"""<details>
+<summary><strong>Glossary</strong> — open when a term is unfamiliar</summary>
+
+| Term | Meaning in this notebook |
+|---|---|
+| **Pixel** | One grid cell; here 20 m × 20 m on the ground. A chip is 128 × 128 pixels = 2.56 km square. |
+| **Band** | One measured wavelength range. We use six Sentinel-2 bands: blue B2, green B3, red B4, narrow near-infrared B8A, shortwave-infrared B11 and B12 (Drusch et al., 2012). |
+| **Surface reflectance** | The fraction of sunlight a surface reflects after atmospheric correction. The chips store it directly (digital number × 0.0001). |
+| **Calendar bin / compositing** | The year is cut into 24 equal bins; each bin holds the median of the cloud-free observations that fell in it. Empty bins are missing, not zero. |
+| **Valid mask** | `S2_valid` is 1 where a bin has a cloud-free observation. Missing values are NaN and are never read as reflectance. |
+| **NDVI** | (NIR − red) / (NIR + red): high for green vegetation, low for water and bare soil. |
+| **Label** | 0 non-rice, 1 rice, 255 ignore (including a 20 m band along class edges). Ignored pixels are never scored. |
+| **Foundation model** | A large model pretrained on broad data and then adapted; Prithvi-EO-2.0 is one for Earth observation (Szwarcman et al., 2026). |
+| **Frozen features / head** | The pretrained encoder's internal outputs, used without changing its weights; the *head* is the small trainable layer on top. |
+| **Patch / token** | Prithvi cuts each frame into 16 × 16 pixel patches (320 m here) and describes each with a 1024-number *token*. |
+| **Fit / development / validation** | Fit chips train models; development chips make every choice; validation chips are scored once, at the end. |
+| **Threshold** | The cut-off that turns a rice score in [0, 1] into a rice/non-rice decision; choosing it is model selection. |
+| **TP / FP / FN / TN** | Rice found / non-rice called rice / rice missed / non-rice correctly left. |
+| **Precision / recall / F1 / IoU** | TP/(TP+FP) / TP/(TP+FN) / 2TP/(2TP+FP+FN) / TP/(TP+FP+FN). |
+| **Pooled** | Counts summed over all scored pixels of all chips before computing a ratio. |
+
+</details>"""
+
+SEC1 = r"""## 1. Prepare a reproducible environment · [Engineering]
+
+> **Infrastructure.** The next three code cells are collapsed. You may run them without studying their implementation; the learning activities start in Section 2.
+
+**Input:** a fresh supported GPU runtime. **System:** hash-verified embedded files and a hash-locked dependency set installed into an isolated environment. **Output:** an isolated process for each stage and a record of the exact source, data and model identities.
+
+Supported runtime: Google Colab (Linux x86_64) with a T4 GPU; the lock is built for manylinux x86_64 and the first cell stops on any other platform. Colab's own Python (3.13) and packages are left untouched: the model stack runs in a separate CPython 3.12.12 environment, so nothing is installed into the notebook kernel and no restart is needed. The cells download public data anonymously and stop on any failed integrity check; do not remove pins to get past a failure. Each run writes to a new directory."""
+
+CELL_RUNTIME = r"""# @title Infrastructure: check the runtime, GPU and disk; create a fresh run directory
+import hashlib
+import json
+import os
+import platform
+import shutil
+import subprocess
+import time
+import urllib.error
+import urllib.request
+import uuid
+import zipfile
+from pathlib import Path
+
+SESSION_START = time.perf_counter()
+if platform.system() != 'Linux' or platform.machine() != 'x86_64':
+    raise RuntimeError('Supported runtime: Google Colab (Linux x86_64) with a T4 GPU. The hash lock is built for '
+                       'manylinux x86_64; other platforms are not supported.')
+try:
+    gpu = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader'], capture_output=True, text=True)
+except FileNotFoundError as exc:
+    raise RuntimeError('Select Runtime > Change runtime type > T4 GPU, then Runtime > Run all.') from exc
+if gpu.returncode:
+    raise RuntimeError('Select a fresh T4 GPU runtime; CUDA was not detected.')
+print('GPU:', gpu.stdout.strip())
+ROOT = Path.cwd() / 'outputs' / 'philippines_rice' / uuid.uuid4().hex[:12]
+ROOT.mkdir(parents=True)
+if shutil.disk_usage(ROOT).free < 12 * 1024**3:
+    raise RuntimeError('At least 12 GiB free disk is required for the environment, weights, chips and exports.')
+print('Run directory:', ROOT)"""
+
+INSTALL_MD = r"""The next cell installs the isolated runtime and defines small display helpers. Each stage then runs as a separate process of that environment, so GPU memory is released between stages. A failed stage stops the notebook; it is never recorded as a skipped success.
+
+**Expected result:** the Python and PyTorch versions of the isolated environment and `True` for CUDA. Installation messages are normal."""
+
+CELL_INSTALL = r"""# @title Infrastructure: install the locked runtime and define the stage runner
+import io
+
+UV_URL = '@@UV_URL@@'
+UV_BYTES = @@UV_BYTES@@
+UV_SHA256 = '@@UV_SHA256@@'
+for attempt in range(3):
+    try:
+        with urllib.request.urlopen(UV_URL, timeout=90) as response:
+            wheel = response.read(UV_BYTES + 1)
+        break
+    except (urllib.error.URLError, TimeoutError, ConnectionError):
+        if attempt == 2:
+            raise
+        time.sleep(2 ** attempt)
+if len(wheel) != UV_BYTES or hashlib.sha256(wheel).hexdigest() != UV_SHA256:
+    raise RuntimeError('uv wheel size/hash mismatch: the pinned download changed; stop and report it')
+with zipfile.ZipFile(io.BytesIO(wheel)) as archive:
+    member = next(n for n in archive.namelist() if n.endswith('.data/scripts/uv'))
+    UV = ROOT / 'uv'
+    UV.write_bytes(archive.read(member))
+UV.chmod(0o700)
+ENV = dict(os.environ, HF_HUB_DISABLE_IMPLICIT_TOKEN='1', HF_HUB_DISABLE_TELEMETRY='1', DO_NOT_TRACK='1',
+           PYTHONUNBUFFERED='1', CUBLAS_WORKSPACE_CONFIG=':4096:8', KAGGLEHUB_CACHE=str(ROOT / 'cache' / 'kagglehub'))
+for name in ('HF_TOKEN', 'HUGGING_FACE_HUB_TOKEN', 'KAGGLE_USERNAME', 'KAGGLE_KEY', 'KAGGLE_API_TOKEN',
+             'PYTHONPATH', 'PYTHONHOME', 'PYTHONSTARTUP'):
+    ENV.pop(name, None)  # anonymous downloads only; the kernel's paths must not leak into the environment
+# Colab exports MPLBACKEND=module://matplotlib_inline...; the isolated environment has no matplotlib_inline, so every
+# stage writes figures to files with the Agg backend and this kernel displays them.
+ENV['MPLBACKEND'] = 'Agg'
+subprocess.run([str(UV), 'venv', '--quiet', '--managed-python', '--python', '@@PYTHON@@', str(ROOT / 'env')], env=ENV, check=True)
+PYTHON = ROOT / 'env/bin/python'
+subprocess.run([str(UV), 'pip', 'install', '--quiet', '--python', str(PYTHON), '--require-hashes', '--only-binary', ':all:',
+                '--index-url', 'https://pypi.org/simple', '-r', str(ROOT / 'requirements.txt')], env=ENV, check=True)
+subprocess.run([str(PYTHON), '-c', 'import sys, torch, numpy; print("Python", sys.version.split()[0], "| torch", torch.__version__,'
+                ' "| numpy", numpy.__version__, "| CUDA", torch.cuda.is_available()); assert torch.cuda.is_available()'],
+               env=ENV, check=True)
+BOOTSTRAP_SECONDS = time.perf_counter() - SESSION_START
+print(f'Bootstrap took {BOOTSTRAP_SECONDS:.0f} s')
+
+
+def run_stage(stage, *options):
+    log = ROOT / (stage + '.log')
+    print('Running', stage, '- one process per stage; log:', log, flush=True)
+    with log.open('w', encoding='utf-8') as output:
+        process = subprocess.Popen([str(PYTHON), '-u', str(ROOT / 'capstone.py'), '--root', str(ROOT), '--stage', stage, *options],
+                                   env=ENV, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for line in process.stdout:
+            output.write(line)
+            output.flush()
+            if line.strip() and len(line) < 2000:
+                print(line.rstrip(), flush=True)
+        process.wait()
+    if process.returncode:
+        print(log.read_text(encoding='utf-8')[-6000:])
+        raise RuntimeError(f'{stage} failed with exit {process.returncode}. Read the diagnostics above.')
+
+
+import csv
+from IPython.display import FileLink, Image, Markdown, display
+
+
+def _cell(value):
+    if value is None or value == '':
+        return 'undefined'
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value).replace('|', '/').replace('\n', ' ')
+    return f'{number:.4f}' if ('.' in str(value) or 'e' in str(value)) else str(value)
+
+
+def display_rows(rows, columns):
+    lines = ['| ' + ' | '.join(title for _key, title in columns) + ' |', '|' + '---|' * len(columns)]
+    lines += ['| ' + ' | '.join(_cell(row.get(key)) for key, _title in columns) + ' |' for row in rows]
+    display(Markdown('\n'.join(lines)))
+
+
+def show_table(name, columns=None, limit=40):
+    with (ROOT / 'outputs' / name).open(newline='', encoding='utf-8') as stream:
+        rows = list(csv.DictReader(stream))
+    if not rows:
+        raise RuntimeError('Expected a non-empty evidence table: ' + name)
+    keys = columns or [k for k in rows[0] if k not in ('undefined',)]
+    display_rows(rows[:limit], [(k, k) for k in keys])
+    undefined = [f"{r.get('system') or r.get('variant') or r.get('chip')}: {r['undefined']}" for r in rows if r.get('undefined')]
+    for note in undefined[:limit]:
+        print('undefined ->', note)
+    if len(rows) > limit:
+        print(f'Showing {limit} of {len(rows)} rows; the complete CSV is in results.zip.')
+
+
+def show_figures(pattern):
+    paths = sorted((ROOT / 'outputs' / 'figures').glob(pattern))
+    if not paths:
+        raise RuntimeError('Expected figures are missing: ' + pattern)
+    for path in paths:
+        display(Markdown(f'`{path.name}`'))
+        display(Image(filename=str(path)))
+
+
+def show_record(name):
+    value = json.loads((ROOT / 'outputs' / name).read_text(encoding='utf-8'))
+    if name == 'prepare.json':
+        print('Layout:', value['layout'], '| chips:', value['chips'], '| roles:', value['roles'])
+        print('Development regions:', value['development_regions'], '| fit regions:', value['fit_regions'])
+        display_rows(value['table'], [('chip', 'Chip'), ('role', 'Role'), ('region', 'Region'), ('rice_pixels', 'Rice px'),
+                                      ('nonrice_pixels', 'Non-rice px'), ('ignored_pixels', 'Ignored px'),
+                                      ('selected_bins', 'Frames (bins)'), ('min_selected_valid_fraction', 'Min valid'),
+                                      ('filled_fraction', 'Filled')])
+        display_rows(value['refusal_probes'], [('probe', 'Refusal probe'), ('refused', 'Refused'), ('message', 'Message')])
+    elif name == 'selection.json':
+        for key in ('B', 'C', 'C-FT'):
+            if key in value:
+                item = value[key]
+                print(f"{key}: {item['system']} | threshold {item['threshold']} | development F1 {item['dev_f1']:.4f}"
+                      + (f" | epoch {item['selected_epoch']}" if 'selected_epoch' in item else ''))
+        if 'activity' in value:
+            print('Activity:', value['activity'])
+        last = value.get('C', value.get('B'))
+        display_rows(last['sweep'], [('threshold', 'Threshold'), ('f1', 'Dev F1'), ('iou', 'Dev IoU'),
+                                     ('precision', 'Dev precision'), ('recall', 'Dev recall')])
+    else:
+        rows = []
+        for key, item in value.items():
+            if isinstance(item, dict):
+                rows += [{'check': f'{key}: {k}', 'result': v} for k, v in item.items() if not isinstance(v, (dict, list))]
+            elif not isinstance(item, list):
+                rows.append({'check': key, 'result': item})
+        display_rows(rows, [('check', 'Record'), ('result', 'Value')])"""
+
+SEC2 = r"""## 2. Inspect the chips · [Concept]
+
+The teaching dataset holds 40 chip-years from 2019–2021: 32 in training regions and 8 in validation regions (PH-07 Central Visayas and PH-08 Eastern Visayas). Each chip is 128 × 128 pixels at 20 m in UTM zone 51N (EPSG:32651).
+
+- **Bands.** Six Sentinel-2 bands in the order the model expects: blue B2, green B3, red B4, narrow near-infrared B8A, and shortwave-infrared B11 and B12 (Drusch et al., 2012). Visible light shows colour; near-infrared is bright over healthy leaves; shortwave infrared drops over water and wet soil.
+- **Compositing and gaps.** The year is split into 24 equal calendar bins. Each bin is the median of that bin's cloud-free observations; where clouds hid every observation, the bin is missing (NaN, `S2_valid` = 0). The Philippines is cloudy, so gaps are normal.
+- **Why rice is temporal.** A paddy is flooded before transplanting (dark in shortwave infrared, low NDVI), then greens up quickly (NDVI rises), then is harvested (NDVI falls). One image can confuse young rice with water or grass; the sequence is distinctive (Xiao et al., 2005).
+- **Labels.** Annual rice maps from Chen et al. (2025), reprojected to the chip grid: 0 non-rice, 1 rice, 255 ignore, including a 20 m band along class edges. They are published map products, not field observations.
+
+**Input:** the public dataset, verified against the pinned `INDEX.jsonl` digest and every chip's SHA-256. **System:** schema checks, frame selection and three deliberate refusal probes. **Output:** a per-chip table, composites, an NDVI series and valid-observation counts by bin. The development example shipped with the dataset is a training sample from the parent study, so it is never read.
+
+**Predict before running:** in which months do you expect the most cloud gaps? Will a rice pixel's NDVI curve have one peak, two, or none?"""
+
+CELL_PREPARE = r"""run_stage('prepare')
+show_record('prepare.json')
+show_figures('overview_*')"""
+
+AFTER_PREPARE = r"""**What to notice:** the table lists every chip with its role, the four bins chosen as Prithvi's frames, the lowest valid fraction among them, and the share of model input that had to be filled. The three refusal probes show that a malformed chip is stopped with a message naming the broken rule, before any model runs. In the NDVI figure, look for the dips and rises of the rice pixel against the flatter non-rice pixel; in the valid-fraction bar chart, find the bins where clouds removed most observations.
+
+**Checkpoint:** name one month range with frequent gaps, one feature of the rice NDVI curve, and one reason the label might disagree with what you see in the composite.
+
+<details>
+<summary>Check your reasoning (open after answering)</summary>
+
+Gaps cluster in the wet season, when clouds are persistent; that is exactly when some rice is growing, so missing data and the signal you need overlap. Many Philippine rice areas are cropped twice a year, so the rice curve often shows two green-up peaks separated by low values at harvest and flooding; a forest or grass pixel stays high or changes slowly. The label can disagree because it comes from a published map with its own errors, because a 20 m pixel can mix a field edge with a road or levee (hence the ignored edge band), and because the composite you see is one bin, not the whole year.
+
+</details>"""
+
+SEC3 = r"""## 3. Predict, declare the protocol and run the baselines · [Evaluation practice]
+
+**Predict first:** where do you expect a pretrained model and a hand-built baseline to disagree — field edges, cloudy chips, small fields, wet but non-rice land? Write one guess.
+
+**Roles.** The 32 training chips are split by **whole region** into **fit** (trains models) and **development** (makes every choice) with a declared, seeded rule: regions are ordered by a SHA-256 hash and added to development until it holds about 25 % of chips with at least two rice chips. Whole regions keep neighbouring chips out of both roles, because nearby pixels and chips are not independent (Roberts et al., 2017). The 8 **validation** chips are scored once, after every choice is frozen. The development example is never used.
+
+**Frozen rules (written to `selection.json`).**
+- A threshold is chosen on development from 0.10 to 0.90 in steps of 0.05 by the highest pooled development rice F1; ties go to the threshold closest to 0.5, then the lower one. A pixel is rice when its score is **≥** the threshold.
+- Head C's training epoch is chosen on development; the activity in Section 6 runs on development only.
+- Validation is scored once for A, B and C, and the result is kept even if a baseline wins.
+
+**Systems.**
+- **A — all non-rice:** predicts non-rice everywhere. Rice is a minority class, so A can score high accuracy while finding nothing.
+- **B — spectral-temporal LightGBM:** the course study's M1 recipe — 70 features per pixel (per-band mean, spread, minimum, maximum and 10th/50th/90th percentiles over the observed year; quarterly band means; quarterly valid fractions) — on a class-stratified sample of at most 65,536 fit pixels, one fixed configuration (31 leaves), early stopping on development. Lesson L3 teaches this recipe.
+
+**Metrics.** Counts are pooled over every pixel with `label ≠ 255`. Rice F1 is primary; IoU, precision and recall are reported beside it, and accuracy only to show why it misleads. For an imbalanced class, precision-based measures stay informative where accuracy does not (Saito & Rehmsmeier, 2015). A ratio with a zero denominator is reported as **undefined** with its reason, never as 0 or 1.
+
+**Expected result:** B's threshold sweep on development and a two-row development table."""
+
+CELL_BASELINE = r"""run_stage('baseline')
+show_record('selection.json')
+show_table('development_metrics.csv', ['system', 'threshold', 'f1', 'iou', 'precision', 'recall', 'accuracy', 'scored_pixels'])"""
+
+AFTER_BASELINE = r"""**What to notice:** A's accuracy equals the share of non-rice pixels, while its recall and F1 are 0 and its precision is undefined (it never predicts rice). Read B's sweep around the selected threshold: a broad plateau means the choice is not fragile.
+
+<details>
+<summary>Check your reasoning (open after answering)</summary>
+
+If roughly 80 % of development pixels are non-rice, A scores about 0.8 accuracy without finding a single paddy — which is why the comparison is read in F1 and IoU. B's threshold is a real choice made on development only; its development F1 is therefore optimistic for B and is not a held-out score. The threshold is now frozen.
+
+</details>"""
+
+SEC4 = r"""## 4. Build Prithvi's input and extract frozen features · [Concept]
+
+**Input:** each chip's 24 bins. **Model:** Prithvi-EO-2.0-300M, a vision transformer pretrained by masked reconstruction of multispectral, multitemporal imagery (Szwarcman et al., 2026), loaded from an immutable revision. **Output:** for every chip, an 8 × 8 grid of 1024-number features from encoder block 12.
+
+How the input is built, and what each step costs:
+
+1. **Four frames.** The model was pretrained on four time steps. We take the clearest bin of each calendar quarter — highest valid fraction, earliest bin on ties — and record the chosen bins and their valid fractions (Section 2 table).
+2. **Normalisation.** Reflectance × 10,000, then subtract and divide by the model's pinned band means and standard deviations. This is the repository's audited preprocessing, not a new recipe.
+3. **Gaps.** After standardisation every missing value is set to 0, which is the pretraining mean. The filled share is recorded per chip and per frame. Pixels with no observation in any chosen frame stay in the scoring, as in the course study.
+4. **No resizing.** Prithvi was pretrained on 30 m Harmonized Landsat–Sentinel (HLS) data; these chips are 20 m Sentinel-2 surface reflectance. We do not resample to 30 m to hide the mismatch: the model sees finer pixels than it was trained on, and the processing level is close to, but not the same as, HLS. Both are stated limitations.
+5. **Patches.** Each 16 × 16 pixel patch — **320 m** at 20 m — becomes one token. A 128-pixel chip gives 8 × 8 patches per frame. Block 12 of 24 is fixed in advance (the repository's validated `FEATURE_LAYER`); there is no layer sweep. Tokens are averaged over the four frames.
+
+The upstream checkpoint is a pickle. Its imported globals are audited statically against a pinned digest, it is unpickled once with torch's `weights_only` loader and converted to safetensors, and the model is loaded strictly from the verified file. No downloaded model code is executed. Features are computed once in float32 with deterministic GPU settings and cached, so later stages train on the cache.
+
+**Predict before running:** how many patch tokens does the encoder return for one chip with four frames? (Hint: one extra summary token is added.)"""
+
+CELL_FEATURES = r"""run_stage('features')
+show_record('model.json')
+show_record('features.json')"""
+
+AFTER_FEATURES = r"""**What to notice:** the model record shows the pinned revision, the audit and conversion (or that a verified file was reused), the parameter count and a strict load. The feature record shows grid shapes of 1024 × 8 × 8, the time taken and the peak GPU memory measured in this run.
+
+<details>
+<summary>Check your reasoning (open after answering)</summary>
+
+Four frames × 8 × 8 patches = 256 patch tokens, plus one class token = 257; the stage refuses to continue if the count differs. Each token summarises a 320 m square, so the features cannot resolve a 40 m field boundary by themselves: whatever head we train will start from a coarse grid.
+
+</details>"""
+
+SEC5 = r"""## 5. Train head C on the fit chips · [Concept]
+
+**System C:** the frozen block-12 features → a 1 × 1 convolution from 1024 to 256 channels → GELU → a 1 × 1 convolution to 2 classes → bilinear upsampling from 8 × 8 to 128 × 128 pixels. Loss: cross-entropy with label 255 ignored, no class weights. Fixed in advance: AdamW, learning rate 0.001, weight decay 0.01, batch 8, at most 30 epochs, seed 0, no augmentation. The epoch with the highest development rice F1 at 0.5 is kept (earliest on ties), then C's threshold is chosen on development with the same rule as B. Training runs on the cached features, so it takes seconds.
+
+**Predict before running:** will the development loss keep falling for 30 epochs? Will C's development F1 beat B's?"""
+
+CELL_TRAIN = r"""run_stage('train-head')
+show_figures('head_training_curves*')
+show_record('selection.json')
+show_table('development_metrics.csv', ['system', 'threshold', 'f1', 'iou', 'precision', 'recall', 'accuracy'])"""
+
+AFTER_TRAIN = r"""**What to notice:** fit loss usually keeps falling while development loss flattens or rises; the dashed line marks the kept epoch. The development table now has three rows. All three were selected on these development chips, so this table is for choosing, not for claiming.
+
+<details>
+<summary>Check your reasoning (open after answering)</summary>
+
+With 24 fit chips the head can memorise the fit set; the development curve is what tells you when that starts. If C's development F1 is below B's, that is a legitimate result: B sees all 24 bins at every pixel, while C sees four frames through 320 m patches. If C wins on development, the margin may still shrink on validation, because development informed C's epoch and threshold.
+
+</details>"""
+
+SEC6 = r"""## 6. Change one thing: one frame versus four · [Evaluation practice]
+
+**Predict → Change one thing → Run → Observe → Explain.** Keep the weights, the head, the seed, the epoch count (C's selected epoch) and the threshold fixed. Change only the number of frames: **T = 1** — only one quarter's clearest frame, tried for each of the four quarters — versus the canonical **T = 4**. Everything is scored on development chips only; validation is untouched.
+
+**Predict before running:** which single quarter will work best? How far below T = 4 will it fall?
+
+This activity does **not** change the canonical system: validation uses T = 4, as declared before the activity."""
+
+CELL_ACTIVITY = r"""run_stage('activity')
+show_table('activity.csv', ['variant', 'epochs', 'threshold', 'f1', 'iou', 'precision', 'recall'])
+show_figures('activity_*')"""
+
+AFTER_ACTIVITY = r"""**Observe and explain:** compare the best single quarter with T = 4. The T = 4 row reproduces C's development result exactly (same seed and epochs), which shows the activity changed only the frames.
+
+<details>
+<summary>Check your reasoning (open after answering)</summary>
+
+Usually T = 4 beats every single quarter, and the best quarter is one that catches flooding or peak green-up. That supports the season-based explanation: rice is identified by how a pixel changes, which one snapshot cannot show. If a single quarter matched T = 4 here, the honest reading is that on these eight development chips one well-timed image carried most of the signal — not that time never matters, because eight chips from four regions are a small sample.
+
+</details>"""
+
+SEC7 = r"""## 7. Optional extension: fine-tune the encoder (C-FT) · [Evaluation practice]
+
+Switched off by default. When `RUN_FINETUNE` is ticked, a separate system **C-FT** unfreezes the patch embedding and encoder blocks 1–12 (the blocks that feed block 12; blocks 13–24 and the decoder stay frozen) and trains them with a fresh head under the same fit/development protocol: AdamW (encoder 0.00001, head 0.001), batch 4, 10 epochs fixed in advance, fp16 mixed precision, epoch and threshold chosen on development. Its validation predictions are computed without labels at the selected epoch and stay sealed; C-FT is scored in Section 8 only because it was selected **before** validation scoring. If you tick it after Section 8 has run, the stage refuses: a model chosen after seeing validation results would be exploratory. The run records its peak GPU memory with the full AdamW state; a feasibility check measured 2.69 GiB for the unfrozen backward pass at batch 4 without optimizer state. The canonical comparison and the exported artifact remain the frozen-encoder system C.
+
+To use it: tick the box, then Runtime → Run all on a fresh runtime."""
+
+CELL_FINETUNE = r"""RUN_FINETUNE = False  # @param {type:"boolean"}
+if RUN_FINETUNE:
+    run_stage('finetune')
+    show_table('finetune_curve.csv')
+    show_record('finetune.json')
+else:
+    print('C-FT not run (RUN_FINETUNE = False); the canonical comparison is A, B and C.')"""
+
+SEC8 = r"""## 8. Score A, B and C once on the validation chips · [Evaluation practice]
+
+**Question tested:** with every choice frozen on development, how do the all-non-rice rule, B at its development threshold and C at its development threshold compare on the 8 validation chips from PH-07 and PH-08?
+
+The stage first records the digest of `selection.json`, then scores. It refuses a second scoring in the same run directory, and the export stage refuses if the selection changed afterwards.
+
+**Predict before running:** will the ranking on validation match development? Which validation chip will be hardest?"""
+
+CELL_EVALUATE = r"""run_stage('evaluate')
+show_table('metrics.csv', ['system', 'threshold', 'f1', 'iou', 'precision', 'recall', 'accuracy', 'tp', 'fp', 'fn', 'tn'])
+show_table('per_chip_metrics.csv', ['chip', 'region', 'system', 'f1', 'iou', 'precision', 'recall', 'reference_rice_pixels'])"""
+
+SEC9 = r"""## 9. Interpret the result · [Evaluation practice]
+
+**Pooled first.** The first table is the comparison: one pooled F1, IoU, precision and recall per system over the same labelled pixels. **Per chip second**, for diagnosis only. Two validation chips contain no reference rice: their recall is undefined, and their F1 is undefined if a system also predicts no rice there (or 0 if it predicts any). Undefined values are printed with their reason, never averaged in as numbers.
+
+**What the evidence can bear.** Eight chips from two neighbouring regions, many of them close together. Pixels and chips are spatially dependent, so treating them as independent samples would overstate confidence (Roberts et al., 2017), and spatially naive validation can make mapping models look far better than they are (Ploton et al., 2020). We therefore compute no significance tests and no confidence intervals, and make no national or operational claim. Labels are published map products, so disagreement is not proof of model error. Whether Prithvi's pretraining imagery included these places is unknown.
+
+**For reference only (not re-run here):** on the same 8 validation chips, the course lessons report teaching-scale F1 of **0.760** for Sentinel-2 LightGBM (L3) and **0.928** for AlphaEarth LightGBM (L3B). Those are lesson results with their own caveats — in particular, they chose their threshold on these same validation chips, so they are development scores, not held-out ones. AlphaEarth annual embeddings (Brown et al., 2025) combine several sensors and had crop-related supervision; they are not used by A, B or C.
+
+The next cell shows the error maps for every validation chip (TP, FP, FN, TN; ignored pixels grey), where B and C disagree, and the 320 m patch effect on the chip with the most rice."""
+
+CELL_FIGURES = r"""show_figures('validation_*')"""
+
+AFTER_FIGURES = r"""**Interpret:** pick one chip where B and C disagree. Is the disagreement along field edges, in whole fields, or near cloud-filled areas? In the patch figure, can you see C's 16-pixel blocks? Weigh model error, label error and the 320 m grid as competing explanations.
+
+<details>
+<summary>Check your reasoning (open after answering)</summary>
+
+C's errors tend to sit in bands along field boundaries and fill small gaps between fields, because each decision starts from a 320 m patch and is smoothed by upsampling; B decides per 20 m pixel but sees no spatial context, so its errors are more speckled. A pooled F1 difference of a few hundredths on eight clustered chips is within what a different chip selection could reverse, so the defensible sentence names the chips, the systems and the numbers, then says what the sample cannot establish. If B beats C, report it: the hand-built baseline is a real competitor, and a foundation model is not required to win.
+
+</details>"""
+
+SEC10 = r"""## 10. Export, reload in a fresh process and verify · [Engineering]
+
+**Exported artifact:** `head_adapter/` — `adapter.safetensors` (the head's four tensors only; no base weights, no training data) and `manifest.json` (format, base model revision and converted-weights digest, feature block, frame rule, normalisation, threshold, training configuration, selection basis, file sizes and SHA-256). A consumer needs the base model at the recorded revision plus this folder.
+
+**Fresh reload:** a new process verifies the artifact's digests, rebuilds the base model strictly from verified files, recomputes the validation chips' features from the HDF5 files, and compares the reloaded head's scores with the evaluation's scores (tolerance 0.0001) and decisions (must be identical). It reopens the prediction GeoTIFFs (0 non-rice, 1 rice, 255 not scored; EPSG:32651, 20 m) and recomputes the metrics from them. Passing shows the saved computation is reproducible from files; it does not show the model or the labels are right.
+
+**Expected result:** a verification table whose checks are all true, a download link for `results.zip` (records, tables, figures, GeoTIFFs, the adapter, attribution and `checksums.json`; no source imagery or base weights) and a conclusion scaffold."""
+
+CELL_EXPORT = r"""run_stage('export')
+run_stage('reload')
+run_stage('report')
+show_record('verification.json')
+display(FileLink(str(ROOT / 'outputs' / 'results.zip')))
+display(Markdown((ROOT / 'outputs' / 'conclusion.md').read_text(encoding='utf-8')))"""
+
+SEC11 = r"""## 11. Conclude with evidence · [Evaluation practice]
+
+Complete the scaffold above in your own words. A strong conclusion states the task and pixel population, reports every system on the same pixels — including a baseline that may have won — names the frame activity's result, uses the error maps to say *where* systems differ, and states the limits: eight validation chips from two regions, spatial clustering, map-derived labels, the 20 m versus 30 m mismatch, the 320 m patch grid and unknown pretraining overlap.
+
+<details>
+<summary>Check your reasoning: what makes a conclusion strong? (open after writing yours)</summary>
+
+Strong: "On the labelled pixels of eight validation chips in Central and Eastern Visayas, the frozen-Prithvi head reached pooled rice F1 *x* against *y* for the LightGBM baseline and 0 for all-non-rice; on development, four frames beat the best single quarter by *z*, consistent with rice being a seasonal signal. C's errors concentrate along field edges, consistent with its 320 m patches. With eight clustered chips and map-derived labels, this does not establish which approach is better nationally; next we would score a larger, spatially separated test set." Weak: "Prithvi is better at mapping rice" from one pooled number.
+
+</details>
+
+**Transfer:** Lessons L3 and L3B show the feature-engineering and embedding routes in depth; Section 12 lets you score your own chips with the exported head and, with enough labelled sites, adapt a new head under the same protocol."""
+
+SEC12 = r"""## 12. Optional: bring your own chips · [Engineering]
+
+Switched off by default, so Run all never waits for an upload. Tick `USE_BYOD`, then either set `BYOD_PATH` to a folder or `.zip` already in this runtime, or leave it empty to get an upload dialog (Colab).
+
+**Required format — this dataset's own schema (checked before any model runs):**
+
+| Key | Contract |
+|---|---|
+| `S2` | float32 `[24, 6, 128, 128]`: 24 equal calendar bins × bands B2, B3, B4, B8A, B11, B12 in that order; surface reflectance (digital number × 0.0001); NaN allowed where `S2_valid` = 0 |
+| `S2_valid` | 0/1 `[24, 128, 128]` |
+| `label` | uint8 `[128, 128]`: 0 non-rice, 1 rice, 255 ignore — needed for scoring and adaptation; optional for prediction only |
+| attributes (optional) | `x_min`, `y_max` (EPSG:32651 metres) georeference the GeoTIFFs; `group` names the site (default: the file name without a trailing `_YYYY`) |
+
+One `.h5` file per chip-year, at most 200 files. Values above 2.0 mean the file stores reflectance × 10,000; it is refused, not rescaled. Other keys (AlphaEarth, `label_raw`) are ignored.
+
+**What happens:** every file is validated with the same rules as the sample data (a failure names the file and the broken rule); every chip is scored with the exported head at its frozen threshold (GeoTIFFs and, if labelled, per-chip metrics). With at least 6 labelled chips from at least three sites, the notebook also adapts a new head under the same protocol: sites are split into fit, development and test by a declared hash rule, the epoch and threshold are chosen on development, the test sites are scored against the all-non-rice baseline, and the adapted head is exported and reloaded from files.
+
+**Privacy:** your files stay in this runtime; nothing is sent to any other service. Do not upload confidential, restricted, licensed or personal data unless you are authorised to process it in Google Colab."""
+
+CELL_BYOD = r"""USE_BYOD = False  # @param {type:"boolean"}
+BYOD_PATH = ''  # @param {type:"string"}
+if USE_BYOD:
+    target = ROOT / 'byod_input'
+    target.mkdir(exist_ok=True)
+    sources = [Path(BYOD_PATH)] if BYOD_PATH else []
+    if not sources:
+        from google.colab import files  # only on Colab, only after the sample path has completed
+        sources = [Path(name) for name in files.upload()]
+    for source in sources:
+        if source.is_dir():
+            for path in source.rglob('*.h5'):
+                shutil.copy2(path, target / path.name)
+        elif source.suffix == '.zip':
+            with zipfile.ZipFile(source) as archive:
+                for name in archive.namelist():
+                    if name.endswith('.h5') and not name.startswith('/') and '..' not in Path(name).parts:
+                        (target / Path(name).name).write_bytes(archive.read(name))
+        elif source.suffix == '.h5':
+            shutil.copy2(source, target / source.name)
+        else:
+            raise ValueError(f'{source}: expected a folder, a .zip or .h5 files')
+    run_stage('byod', '--input', str(target))
+    show_table('byod/byod_canonical_head.csv')
+    print(json.dumps(json.loads((ROOT / 'outputs' / 'byod' / 'byod_summary.json').read_text()), indent=1)[:4000])
+else:
+    print('BYOD not run (USE_BYOD = False).')"""
+
+TROUBLE = r"""## Troubleshooting
+
+| Observation | Appropriate response |
+|---|---|
+| "Select a fresh T4 GPU runtime" or CUDA not detected | Runtime → Change runtime type → T4 GPU, then Runtime → Run all. |
+| "Supported runtime: Google Colab (Linux x86_64)" | The lock is built for manylinux x86_64; use Colab (or another Linux x86_64 GPU runtime). |
+| Download, size or SHA-256 mismatch (uv, packages, model, INDEX, chips) | Re-run once for a transient network error. A persistent mismatch means a pinned source changed: stop and report it; do not remove the check. |
+| Kaggle download fails | The dataset is public and needs no account; retry once. If Kaggle is unreachable, the notebook cannot run. |
+| Out of disk | Start a fresh runtime with at least 12 GiB free. |
+| GPU out of memory | Use a fresh T4 runtime; do not run the optional fine-tune with a larger batch. Never record a skipped stage as a success. |
+| "run the earlier stages in order" | A stage's inputs are missing: Runtime → Run all from the top. |
+| "validation was already scored" / fine-tune refuses | Scoring happens once per run directory. Start a fresh runtime to change a development choice. |
+| B beats C, or C beats B | Preserve the result and examine the error maps; either outcome is valid. |
+| Reload parity fails | Preserve `verification.json` and the logs; the release cannot be qualified until the mismatch is explained. |
+| BYOD file refused | Read the message: it names the key, shape, dtype, value range or label rule that failed. Fix the file and retry. |"""
+
+LICENCES = r"""## Data, model, attribution and licences
+
+**Data:** `kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching`, version 1 (public, CC BY 4.0), verified by `INDEX.jsonl` SHA-256 `e92bbb9f20d1f7efb225d568e2a44a6ae3d59faab9079590e2dfad780458344d` and every chip's SHA-256. Component attribution, from the dataset's rights file:
+
+- **Rice labels:** Chen et al., *20 m resolution maps of paddy rice cropping intensity and planting dates in Monsoon Asia from 2018 to 2021* (Chen et al., 2025), https://doi.org/10.5281/zenodo.15124936, CC BY 4.0 — reprojected, converted to binary and given an ignored edge band.
+- **Optical inputs:** Contains modified Copernicus Sentinel data 2019–2021 (cloud/quality masking, six-band selection, 20 m resampling, 24 annual median bins), under the Copernicus Sentinel data terms.
+- **AlphaEarth Foundations Satellite Embedding** (Google and Google DeepMind; Brown et al., 2025), CC BY 4.0 — present in the dataset files; not read or shown by this notebook.
+- **Regional boundaries:** geoBoundaries PHL ADM1 (2020 vintage; NAMRIA/PSA/OCHA), CC BY 3.0 IGO.
+- **Dataset compilation:** Kurt Valcorza, CC BY 4.0. Component terms continue to apply.
+
+**Model:** `ibm-nasa-geospatial/Prithvi-EO-2.0-300M` at revision `9eb1b1102806593963daa333bcc491b1c6f8562f` (checkpoint SHA-256 `faab2c8b776f0723f93431747603a7ec586a54fc45473613b4322c29752486e7`), Apache-2.0 (Szwarcman et al., 2026). The carried repository code is Apache-2.0. The exported head contains no base weights and no training data.
+
+**AI Assistance Disclosure:** Generative AI assisted this notebook's code and technical writing under maintainer direction, including checking scholarly references through the Scite literature service. The maintainer remains responsible for reviewing the implementation, validating results and making release decisions. AI assistance is not independent verification, provider endorsement or release approval.
+
+## References
+
+Brown, C. F., Kazmierski, M. R., Pasquarella, V. J., Rucklidge, W. J., Samsikova, M., Zhang, C., Shelhamer, E., Lahera, E., Wiles, O., Ilyushchenko, S., Gorelick, N., Zhang, L. L., Alj, S., Schechter, E., Askay, S., Guinan, O., Moore, R., Boukouvalas, A., & Kohli, P. (2025). *AlphaEarth Foundations: An embedding field model for accurate and efficient global mapping from sparse label data* [Preprint]. arXiv. https://doi.org/10.48550/arXiv.2507.22291
+
+Chen, Y., Liang, S., Li, W., Ma, H., Fang, H., & Xu, J. (2025). *20 m resolution maps of paddy rice cropping intensity and planting dates in Monsoon Asia from 2018 to 2021* [Data set]. Zenodo. https://doi.org/10.5281/zenodo.15124936
+
+Drusch, M., Del Bello, U., Carlier, S., Colin, O., Fernandez, V., Gascon, F., Hoersch, B., Isola, C., Laberinti, P., Martimort, P., Meygret, A., Spoto, F., Sy, O., Marchese, F., & Bargellini, P. (2012). Sentinel-2: ESA's optical high-resolution mission for GMES operational services. *Remote Sensing of Environment, 120*, 25–36. https://doi.org/10.1016/j.rse.2011.11.026
+
+Ploton, P., Mortier, F., Réjou-Méchain, M., Barbier, N., Picard, N., Rossi, V., Dormann, C. F., Cornu, G., Viennois, G., Bayol, N., Lyapustin, A., Gourlet-Fleury, S., & Pélissier, R. (2020). Spatial validation reveals poor predictive performance of large-scale ecological mapping models. *Nature Communications, 11*(1). https://doi.org/10.1038/s41467-020-18321-y
+
+Roberts, D. R., Bahn, V., Ciuti, S., Boyce, M. S., Elith, J., Guillera-Arroita, G., Hauenstein, S., Lahoz-Monfort, J. J., Schröder, B., Thuiller, W., Warton, D. I., Wintle, B. A., Hartig, F., & Dormann, C. F. (2017). Cross-validation strategies for data with temporal, spatial, hierarchical, or phylogenetic structure. *Ecography, 40*(8), 913–929. https://doi.org/10.1111/ecog.02881
+
+Saito, T., & Rehmsmeier, M. (2015). The precision-recall plot is more informative than the ROC plot when evaluating binary classifiers on imbalanced datasets. *PLOS ONE, 10*(3), e0118432. https://doi.org/10.1371/journal.pone.0118432
+
+Szwarcman, D., Roy, S., Fraccaro, P., Gíslason, Þ. E., Blumenstiel, B., Ghosal, R., de Oliveira, P. H., Almeida, J., Sedona, R., Kang, Y., Chakraborty, S., Wang, S., Gomes, C. A., Kumar, A., Gaur, V., Truong, M., Godwin, D., Khallaghi, S., Lee, H., … Ramachandran, R. (2026). Prithvi-EO-2.0: A versatile multitemporal foundation model for Earth observation applications. *IEEE Transactions on Geoscience and Remote Sensing, 64*, 1–20. https://doi.org/10.1109/TGRS.2025.3642610
+
+Xiao, X., Boles, S., Liu, J., Zhuang, D., Frolking, S., Li, C., Salas, W., & Moore, B. (2005). Mapping paddy rice agriculture in southern China using multi-temporal MODIS images. *Remote Sensing of Environment, 95*(4), 480–492. https://doi.org/10.1016/j.rse.2004.12.009
+
+**Data and software sources:** [Teaching dataset on Kaggle](https://www.kaggle.com/datasets/kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching) · [Prithvi-EO-2.0-300M model card](https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-2.0-300M) · [Host repository](https://github.com/kurtvalcorza/prithvi-eo-feature-extraction-pipeline) · [DIMER Notebook Specification](https://github.com/kurtvalcorza/ml-worker/blob/main/integrations/dimer/fleet-specs/NOTEBOOK_SPEC.md) · [Reference capstone](https://github.com/kurtvalcorza/prithvi-flood-segmentation-pipeline/blob/main/tutorials/DIMER_Philippines_Flood_Mapping_Capstone.ipynb)"""
+
+INFRA = {"cellView": "form", "jupyter": {"source_hidden": True}}
+
+
+def cells() -> list[tuple[str, str, dict]]:
+    install = (CELL_INSTALL.replace("@@UV_URL@@", UV_WHEEL["url"]).replace("@@UV_BYTES@@", str(UV_WHEEL["bytes"]))
+               .replace("@@UV_SHA256@@", UV_WHEEL["sha256"]).replace("@@PYTHON@@", MANAGED_PYTHON))
+    return [
+        ("markdown", TITLE, {}), ("markdown", GLOSSARY, {}), ("markdown", SEC1, {}),
+        ("code", CELL_RUNTIME, INFRA),
+        ("code", carrier_cell(carried_files()), {**INFRA, "dimer": {"embedded_sources": True}}),
+        ("markdown", INSTALL_MD, {}), ("code", install, INFRA),
+        ("markdown", SEC2, {}), ("code", CELL_PREPARE, {}), ("markdown", AFTER_PREPARE, {}),
+        ("markdown", SEC3, {}), ("code", CELL_BASELINE, {}), ("markdown", AFTER_BASELINE, {}),
+        ("markdown", SEC4, {}), ("code", CELL_FEATURES, {}), ("markdown", AFTER_FEATURES, {}),
+        ("markdown", SEC5, {}), ("code", CELL_TRAIN, {}), ("markdown", AFTER_TRAIN, {}),
+        ("markdown", SEC6, {}), ("code", CELL_ACTIVITY, {}), ("markdown", AFTER_ACTIVITY, {}),
+        ("markdown", SEC7, {}), ("code", CELL_FINETUNE, {}),
+        ("markdown", SEC8, {}), ("code", CELL_EVALUATE, {}),
+        ("markdown", SEC9, {}), ("code", CELL_FIGURES, {}), ("markdown", AFTER_FIGURES, {}),
+        ("markdown", SEC10, {}), ("code", CELL_EXPORT, {}),
+        ("markdown", SEC11, {}), ("markdown", SEC12, {}), ("code", CELL_BYOD, {}),
+        ("markdown", TROUBLE, {}), ("markdown", LICENCES, {}),
+    ]
+
+
+def build() -> str:
+    files = carried_files()
+    nb_cells = []
+    for index, (kind, source, metadata) in enumerate(cells()):
+        cell = {"cell_type": kind, "id": f"rice-{index:02d}", "metadata": metadata,
+                "source": source.splitlines(keepends=True)}
+        if kind == "code":
+            cell.update(execution_count=None, outputs=[])
+        nb_cells.append(cell)
+    notebook = {
+        "nbformat": 4, "nbformat_minor": 5,
+        "metadata": {
+            "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+            "language_info": {"name": "python"}, "accelerator": "GPU",
+            "colab": {"name": NOTEBOOK.name, "gpuType": "T4", "provenance": []},
+            "dimer": {
+                "notebook_spec": "2.3", "notebook_profile": "E2E", "notebook_mode": "WORKSHOP", "standalone": True,
+                "requires_dimer_worker": False, "release_status": "Candidate",
+                "reference_exemplar": "DIMER_Philippines_Flood_Mapping_Capstone (NOTEBOOK_SPEC 25.15)",
+                "owner_decisions": {"D1": "E2E with BYOD of HDF5 chips in the dataset schema",
+                                    "D2": "frozen-encoder head canonical; opt-in fine-tune extension",
+                                    "D3": "fixed block 12 (FEATURE_LAYER = 11)"},
+                "generated_from": {
+                    "repository": "kurtvalcorza/prithvi-eo-feature-extraction-pipeline", "generator": GENERATOR,
+                    "files": {k: hashlib.sha256(v.encode("utf-8")).hexdigest() for k, v in files.items()},
+                    "post_generation_revisions": [],
+                },
+            },
+        },
+        "cells": nb_cells,
+    }
+    return json.dumps(notebook, indent=1, ensure_ascii=False) + "\n"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--check", action="store_true", help="fail if the committed notebook is not up to date")
+    args = parser.parse_args(argv)
+    text = build()
+    if args.check:
+        current = NOTEBOOK.read_text(encoding="utf-8") if NOTEBOOK.exists() else ""
+        if current != text:
+            print(f"STALE: {NOTEBOOK} differs from the generator output; run {GENERATOR}", file=sys.stderr)
+            return 1
+        print(f"OK: {NOTEBOOK.name} is up to date ({len(text.encode('utf-8'))} bytes)")
+        return 0
+    NOTEBOOK.write_bytes(text.encode("utf-8"))
+    print(f"wrote {NOTEBOOK} ({len(text.encode('utf-8'))} bytes)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
