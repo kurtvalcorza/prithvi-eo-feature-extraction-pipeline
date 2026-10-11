@@ -1711,8 +1711,9 @@ STAGES: dict[str, Callable[[Context], None]] = {
 }
 
 
-# Stages whose receipt must exist before a stage may start. A stage deletes its own receipt when it starts, and
-# prepare deletes every receipt, so a failed or repeated upstream stage can never leave downstream work looking current.
+# Stages whose receipt must exist before a stage may start. Starting a stage deletes its own receipt and the receipt
+# of every stage that depends on it, directly or transitively, so a failed or repeated upstream stage can never leave
+# downstream work looking current (prepare, the root, therefore clears every receipt).
 PREREQUISITES: dict[str, tuple[str, ...]] = {
     "baseline": ("prepare",), "features": ("prepare",), "train-head": ("baseline", "features"),
     "activity": ("train-head",), "finetune": ("train-head",), "evaluate": ("baseline", "train-head", "activity"),
@@ -1720,16 +1721,28 @@ PREREQUISITES: dict[str, tuple[str, ...]] = {
 }
 
 
+def dependents(stage: str) -> set[str]:
+    """Every stage that needs `stage`, directly or through another stage."""
+    found: set[str] = set()
+    frontier = [stage]
+    while frontier:
+        current = frontier.pop()
+        for name, needs in PREREQUISITES.items():
+            if current in needs and name not in found:
+                found.add(name)
+                frontier.append(name)
+    return found
+
+
 def start_stage(ctx: Context, stage: str) -> None:
-    """Refuse to run `stage` until its prerequisite stages have completed, then clear its stale receipt."""
+    """Refuse to run `stage` until its prerequisite stages have completed, then clear its own receipt and those of
+    all its dependents, which stay ineligible until the chain completes again."""
     receipts = ctx.work / "receipts"
     missing = [name for name in PREREQUISITES.get(stage, ()) if not (receipts / f"{name}.json").exists()]
     if missing:
         raise RuntimeError(f"{stage} needs the {', '.join(missing)} stage(s) to complete first; run the cells in order")
-    if stage == "prepare":
-        for old in receipts.glob("*.json"):
-            old.unlink()
-    (receipts / f"{stage}.json").unlink(missing_ok=True)
+    for name in {stage} | dependents(stage):
+        (receipts / f"{name}.json").unlink(missing_ok=True)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

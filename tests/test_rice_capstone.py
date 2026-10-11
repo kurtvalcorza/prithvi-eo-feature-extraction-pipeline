@@ -166,6 +166,23 @@ def test_stages_refuse_to_start_before_their_prerequisites_and_clear_stale_recei
     assert cap.PREREQUISITES["byod"] == ("reload",)  # BYOD loads the exported head_adapter, verified by reload
 
 
+def test_restarting_an_upstream_stage_invalidates_every_dependent_receipt(tmp_path):
+    # Agent Relay review R3 on 8fbcaa6: restarting features and failing left train-head/activity receipts, and
+    # evaluate (whose direct prerequisites omit features) still accepted the run.
+    ctx = cap.Context(tmp_path)
+    receipts = ctx.work / "receipts"
+    receipts.mkdir(parents=True, exist_ok=True)
+    for name in ("prepare", "baseline", "features", "train-head", "activity"):
+        (receipts / f"{name}.json").write_text("{}")
+    cap.start_stage(ctx, "features")  # the restart; suppose it then fails before writing its receipt
+    assert sorted(p.stem for p in receipts.glob("*.json")) == ["baseline", "prepare"]
+    with pytest.raises(RuntimeError, match="train-head"):
+        cap.start_stage(ctx, "evaluate")
+    assert cap.dependents("features") == {"train-head", "activity", "finetune", "evaluate", "export", "reload",
+                                          "report", "byod"}
+    assert cap.dependents("report") == set() and "byod" not in cap.dependents("report")
+
+
 def test_byod_collection_starts_clean_and_refuses_duplicates_unsafe_and_oversized_input(tmp_path, monkeypatch):
     import zipfile
 
