@@ -256,7 +256,17 @@ def read_chip_h5(path: Path, *, require_label: bool = True) -> dict[str, Any]:
 
     try:
         with h5py.File(path, "r") as handle:
-            arrays = {key: handle[key][...] for key in ("S2", "S2_valid", "label") if key in handle}
+            arrays = {}
+            for key, shape in (("S2", (N_BINS, N_BANDS, CHIP, CHIP)), ("S2_valid", (N_BINS, CHIP, CHIP)),
+                               ("label", (CHIP, CHIP))):
+                if key not in handle:
+                    continue
+                dataset = handle[key]
+                if not isinstance(dataset, h5py.Dataset) or dataset.shape != shape or dataset.dtype.kind not in "fiub":
+                    declared = getattr(dataset, "shape", "a group")
+                    raise ChipError(f"{path.name}: {key} is {declared} ({getattr(dataset, 'dtype', 'no dtype')}); "
+                                    f"expected a numeric dataset of shape {shape} (checked before reading)")
+                arrays[key] = dataset[...]
             attrs = georeference_attrs(dict(handle.attrs))
     except OSError as exc:
         raise ChipError(f"{path.name}: not a readable HDF5 file ({exc})") from exc
@@ -606,6 +616,11 @@ def _csv_value(value: Any) -> Any:
     if isinstance(value, float):
         return repr(round(value, 6))
     return value
+
+
+def table_columns(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Every key of every row, in first-seen order, so rows with extra columns (labelled BYOD chips) keep them."""
+    return list(dict.fromkeys(key for row in rows for key in row))
 
 
 def write_csv(path: Path, rows: Sequence[Mapping[str, Any]], columns: Sequence[str] | None = None) -> None:
@@ -1536,9 +1551,12 @@ def byod_group(stem: str, attrs: Mapping[str, Any]) -> str:
     return str(attrs["group"]) if "group" in attrs else re.sub(r"_(19|20)\d\d$", "", stem)
 
 
-def byod_split(ids: Sequence[str], groups: Mapping[str, str], rice: Mapping[str, bool]) -> dict[str, list[str]]:
+def byod_split(ids: Sequence[str], groups: Mapping[str, str], rice: Mapping[str, bool],
+               nonrice: Mapping[str, bool]) -> dict[str, list[str]]:
     """Fit / development / test by whole group (SHA-256 order of 'rice-capstone-byod:<k>:<group>', about 60/20/20);
-    the first k giving development and test at least one rice chip and fit both classes is used."""
+    the first k giving development and test at least one rice pixel and fit both rice and non-rice pixels is used.
+    `rice` / `nonrice` say whether a chip has any labelled pixel of that class: the head trains per pixel, so a fit set
+    of chips that all contain some rice is fine as long as their labels also hold non-rice."""
     names = sorted({groups[i] for i in ids})
     if len(names) < 3:
         raise ChipError("adaptation needs at least three groups (sites) so that fit, development and test differ")
@@ -1548,9 +1566,10 @@ def byod_split(ids: Sequence[str], groups: Mapping[str, str], rice: Mapping[str,
         roles = {"development": order[:n_dev], "test": order[n_dev:2 * n_dev], "fit": order[2 * n_dev:]}
         split = {role: sorted(i for i in ids if groups[i] in members) for role, members in roles.items()}
         if (split["fit"] and any(rice[i] for i in split["development"]) and any(rice[i] for i in split["test"])
-                and any(rice[i] for i in split["fit"]) and not all(rice[i] for i in split["fit"])):
+                and any(rice[i] for i in split["fit"]) and any(nonrice[i] for i in split["fit"])):
             return split
-    raise ChipError("no group assignment gives rice in fit, development and test; add more labelled sites")
+    raise ChipError("no group assignment gives rice in fit, development and test and non-rice in fit; "
+                    "add more labelled sites")
 
 
 def collect_byod(sources: Sequence[Path], target: Path) -> list[Path]:
@@ -1641,15 +1660,16 @@ def stage_byod(ctx: Context, sources: Sequence[Path]) -> None:
         if chip["label"] is not None:
             row.update(scores(confusion(p, chip["label"], manifest["threshold"])))
         rows.append(row)
-    write_csv(out / "byod_canonical_head.csv", rows)
+    write_csv(out / "byod_canonical_head.csv", rows, table_columns(rows))
     labelled = [cid for cid, c in chips.items() if c["label"] is not None]
     summary: dict[str, Any] = {"chips": len(chips), "labelled": len(labelled), "canonical_threshold": manifest["threshold"],
                                "data_location": "processed inside this runtime only; nothing is uploaded elsewhere"}
     if len(labelled) >= BYOD_MIN_ADAPT_CHIPS:
         groups = {cid: byod_group(cid, chips[cid]["attrs"]) for cid in labelled}
         rice = {cid: bool((chips[cid]["label"] == 1).any()) for cid in labelled}
+        nonrice = {cid: bool((chips[cid]["label"] == 0).any()) for cid in labelled}
         try:
-            split = byod_split(labelled, groups, rice)
+            split = byod_split(labelled, groups, rice, nonrice)
         except ChipError as exc:
             summary["adaptation"] = f"not run: {exc}"
         else:

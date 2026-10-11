@@ -248,12 +248,18 @@ def test_byod_group_keeps_a_sites_years_together_and_split_is_deterministic():
     ids = [f"s{i}_{y}" for i in range(6) for y in (2019, 2020)]
     groups = {i: cap.byod_group(i, {}) for i in ids}
     rice = {i: not i.startswith("s0") for i in ids}
-    split = cap.byod_split(ids, groups, rice)
-    assert split == cap.byod_split(ids, groups, rice)
+    nonrice = {i: True for i in ids}
+    split = cap.byod_split(ids, groups, rice, nonrice)
+    assert split == cap.byod_split(ids, groups, rice, nonrice)
+    # Codex P1 on 8fbcaa6: every chip holding some rice (and some non-rice) must still split; the head trains per pixel.
+    every_chip_has_rice = cap.byod_split(ids, groups, {i: True for i in ids}, nonrice)
+    assert all(every_chip_has_rice.values())
+    with pytest.raises(cap.ChipError, match="non-rice in fit"):
+        cap.byod_split(ids, groups, {i: True for i in ids}, {i: False for i in ids})
     for a, b in (("fit", "development"), ("fit", "test"), ("development", "test")):
         assert not {groups[i] for i in split[a]} & {groups[i] for i in split[b]}
     with pytest.raises(cap.ChipError, match="three groups"):
-        cap.byod_split(ids[:4], groups, rice)
+        cap.byod_split(ids[:4], groups, rice, nonrice)
 
 
 # ---------------------------------------------------------------------------------------- baseline B recipe
@@ -326,6 +332,28 @@ def test_georeference_reads_the_datasets_own_affine_crs_and_group_id_attributes(
     assert cap.georeference_attrs({**real, "crs": "EPSG:4326"}) == {"group": "ph_240_427"}  # never mislocated
     assert cap.georeference_attrs({**real, "affine": "[10.0, 0.0, 1.0, 0.0, -10.0, 2.0]"}) == {"group": "ph_240_427"}
     assert cap.georeference_attrs({"affine": "not json", "crs": "EPSG:32651"}) == {}
+
+
+def test_hdf5_reader_refuses_an_oversized_declared_shape_before_reading_it(tmp_path):
+    # Codex P2 on 8fbcaa6: a small sparse file declaring a huge dataset must be refused, not materialised.
+    h5py = pytest.importorskip("h5py")
+    chip = _chip(1)
+    path = tmp_path / "huge_2020.h5"
+    with h5py.File(path, "w") as handle:
+        handle.create_dataset("S2", shape=(24, 6, 8192, 8192), dtype="f4", chunks=(1, 1, 64, 64))  # ~38 GiB declared
+        handle["S2_valid"] = chip["S2_valid"]
+        handle["label"] = chip["label"]
+    assert path.stat().st_size < 1_000_000
+    with pytest.raises(cap.ChipError, match="checked before reading"):
+        cap.read_chip_h5(path)
+
+
+def test_byod_table_keeps_metric_columns_when_the_first_chip_is_unlabelled(tmp_path):
+    # Codex P2 on 8fbcaa6: columns came from the first row only, dropping every later chip's metrics.
+    rows = [{"chip": "a_2020", "georeferenced": True}, {"chip": "b_2020", "georeferenced": True, "f1": 0.5, "tp": 3}]
+    assert cap.table_columns(rows) == ["chip", "georeferenced", "f1", "tp"]
+    cap.write_csv(tmp_path / "t.csv", rows, cap.table_columns(rows))
+    assert (tmp_path / "t.csv").read_text().splitlines()[0] == "chip,georeferenced,f1,tp"
 
 
 def test_hdf5_reader_and_zipped_layout_verify_member_hashes(tmp_path):
