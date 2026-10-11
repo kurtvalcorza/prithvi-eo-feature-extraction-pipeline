@@ -383,6 +383,26 @@ def test_issue_17_follow_ups(tmp_path):
     assert "metrics.csv" in names and not any(n.startswith("byod") for n in names)
 
 
+def test_pr18_round2_findings(tmp_path):
+    # 1. Codex on 7c8796d: --stage byod without --input cleared earlier BYOD results before the argument error.
+    ctx = cap.Context(tmp_path / "run")
+    (ctx.work / "receipts").mkdir(parents=True, exist_ok=True)
+    for name in ("prepare", "baseline", "features", "train-head", "activity", "evaluate", "export", "reload", "byod"):
+        (ctx.work / "receipts" / f"{name}.json").write_text("{}")
+    (ctx.out / "byod").mkdir()
+    (ctx.out / "byod_results.zip").write_text("kept")
+    with pytest.raises(SystemExit):
+        cap.main(["--root", str(tmp_path / "run"), "--stage", "byod"])
+    assert (ctx.out / "byod").exists() and (ctx.out / "byod_results.zip").exists()
+    assert (ctx.work / "receipts" / "byod.json").exists()
+    # 2. restarting report withdraws the results_zip attestation but keeps reload's checks.
+    (ctx.work / "receipts" / "report.json").write_text("{}")
+    cap.write_json(ctx.out / "verification.json", {"binary_decisions_identical": True,
+                                                   "results_zip": {"members": 33, "verified": True}})
+    cap.start_stage(ctx, "report")
+    assert cap.read_json(ctx.out / "verification.json") == {"binary_decisions_identical": True}
+
+
 def test_metric_edge_cases_report_null_with_reasons():
     no_rice = np.zeros((4, 4), dtype=np.uint8)
     silent = cap.scores(cap.confusion(np.zeros((4, 4)), no_rice, 0.5))

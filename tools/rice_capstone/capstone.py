@@ -1862,6 +1862,11 @@ def start_stage(ctx: Context, stage: str) -> None:
                 shutil.rmtree(path)
             else:
                 path.unlink(missing_ok=True)
+    verification = ctx.out / "verification.json"
+    if "report" in {stage} | dependents(stage) and verification.exists():
+        record = read_json(verification)  # reload's checks stay; report's claim about results.zip goes with the zip
+        if record.pop("results_zip", None) is not None:
+            write_json(verification, record)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1870,11 +1875,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--stage", choices=[*STAGES, "byod"], required=True)
     parser.add_argument("--input", type=Path, nargs="+", default=None, help="BYOD folders, .zip archives or .h5 files")
     args = parser.parse_args(argv)
+    if args.stage == "byod" and args.input is None:
+        parser.error("--input is required for --stage byod")  # before start_stage clears any earlier BYOD results
     ctx = Context(args.root)
     start_stage(ctx, args.stage)
     if args.stage == "byod":
-        if args.input is None:
-            parser.error("--input is required for --stage byod")
         stage_byod(ctx, args.input)
     else:
         STAGES[args.stage](ctx)
