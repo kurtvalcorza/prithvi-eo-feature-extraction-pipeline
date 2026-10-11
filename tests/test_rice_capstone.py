@@ -285,6 +285,16 @@ def test_unlabelled_chips_are_accepted_for_prediction_only_and_extra_keys_are_ig
     assert cap.validate_chip(chip, require_label=False)["label"] is None
 
 
+def test_georeference_reads_the_datasets_own_affine_crs_and_group_id_attributes():
+    # 36c5c54 BYOD run: the dataset's chips store affine/crs/group_id, so every BYOD chip came out ungeoreferenced.
+    real = {"affine": "[20.0, 0.0, 614400.0, 0.0, -20.0, 1095680.0]", "crs": "EPSG:32651", "group_id": b"ph_240_427"}
+    assert cap.georeference_attrs(real) == {"x_min": 614400.0, "y_max": 1095680.0, "group": "ph_240_427"}
+    assert cap.georeference_attrs({"x_min": 1.0, "y_max": 2.0, "group": "g"}) == {"x_min": 1.0, "y_max": 2.0, "group": "g"}
+    assert cap.georeference_attrs({**real, "crs": "EPSG:4326"}) == {"group": "ph_240_427"}  # never mislocated
+    assert cap.georeference_attrs({**real, "affine": "[10.0, 0.0, 1.0, 0.0, -10.0, 2.0]"}) == {"group": "ph_240_427"}
+    assert cap.georeference_attrs({"affine": "not json", "crs": "EPSG:32651"}) == {}
+
+
 def test_hdf5_reader_and_zipped_layout_verify_member_hashes(tmp_path):
     h5py = pytest.importorskip("h5py")
     chip = _chip(5)

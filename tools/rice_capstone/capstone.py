@@ -225,6 +225,29 @@ def validate_chip(arrays: Mapping[str, Any], *, name: str = "chip", require_labe
     return {"S2": clean, "S2_valid": valid, "label": label}
 
 
+def georeference_attrs(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Upper-left x_min/y_max and the site group from HDF5 attributes. Accepts this dataset's own schema (`affine` as a
+    JSON list [a, b, c, d, e, f], `crs`, `group_id`) and the plain `x_min`/`y_max`/`group` form. An affine grid is used
+    only when it is EPSG:32651, 20 m and north-up; anything else stays ungeoreferenced rather than mislocated."""
+
+    def text(value: Any) -> str:
+        return value.decode("utf-8") if isinstance(value, bytes) else str(value)
+
+    attrs: dict[str, Any] = {key: float(raw[key]) for key in ("x_min", "y_max") if key in raw}
+    if "affine" in raw and not attrs:
+        try:
+            a, b, c, d, e, f = (float(v) for v in json.loads(text(raw["affine"])))
+        except (TypeError, ValueError):
+            a = b = c = d = e = f = math.nan
+        if text(raw.get("crs", "")) == "EPSG:32651" and (a, b, d, e) == (20.0, 0.0, 0.0, -20.0):
+            attrs.update(x_min=c, y_max=f)
+    for key in ("group", "group_id"):
+        if key in raw:
+            attrs["group"] = text(raw[key])
+            break
+    return attrs
+
+
 def read_chip_h5(path: Path, *, require_label: bool = True) -> dict[str, Any]:
     """Read only S2, S2_valid, label (and the georeferencing attributes) from one HDF5 chip, then validate it."""
     import h5py
@@ -232,10 +255,7 @@ def read_chip_h5(path: Path, *, require_label: bool = True) -> dict[str, Any]:
     try:
         with h5py.File(path, "r") as handle:
             arrays = {key: handle[key][...] for key in ("S2", "S2_valid", "label") if key in handle}
-            attrs: dict[str, Any] = {key: float(handle.attrs[key]) for key in ("x_min", "y_max") if key in handle.attrs}
-            if "group" in handle.attrs:
-                group = handle.attrs["group"]
-                attrs["group"] = group.decode("utf-8") if isinstance(group, bytes) else str(group)
+            attrs = georeference_attrs(dict(handle.attrs))
     except OSError as exc:
         raise ChipError(f"{path.name}: not a readable HDF5 file ({exc})") from exc
     chip = validate_chip(arrays, name=path.name, require_label=require_label)
