@@ -26,7 +26,7 @@ Shared sequence: orient -> Input / Model / Output -> predict -> run -> notice ->
 
 ## 3. Dataset (verified)
 
-Dataset: Kaggle `kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching`, version 1, **public**, CC BY 4.0 (the notebook pins version 2, published 2026-10-11, whose data archives, INDEX and member hashes are identical to version 1; Kaggle stopped serving the superseded version 1 to anonymous users). Verified 2026-10-11: anonymous page HTTP 200; `INDEX.jsonl` SHA-256 `e92bbb9f20d1f7efb225d568e2a44a6ae3d59faab9079590e2dfad780458344d`; all 10 `PACKAGE.sha256` entries match the local copy; Kaggle lists the archives expanded into `data-train/`, `data-validation/`, `development-example/`.
+Dataset: Kaggle `kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching`, version 1, **public**, CC BY 4.0 (the notebook pins version 1. Versions 2 and 3, published 2026-10-11, change only the card and rights wording with identical data, but Kaggle built no download archive for them; anonymous access to version 1 depends on the dataset setting that keeps all versions accessible, enabled by the maintainer on 2026-10-11). Verified 2026-10-11: anonymous page HTTP 200; `INDEX.jsonl` SHA-256 `e92bbb9f20d1f7efb225d568e2a44a6ae3d59faab9079590e2dfad780458344d`; all 10 `PACKAGE.sha256` entries match the local copy; Kaggle lists the archives expanded into `data-train/`, `data-validation/`, `development-example/`.
 
 - 40 chip-years, 2019–2021: 32 train, 8 validation. No test split in the teaching package.
 - Each chip 128 x 128 px at 20 m, EPSG:32651.

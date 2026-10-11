@@ -39,7 +39,8 @@ except ImportError:  # repository checkout (tests)
 # --------------------------------------------------------------------------------------------------
 
 DATASET_SLUG = "kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching"
-DATASET_VERSION = 2  # v2 (2026-10-11) changed only the card, RIGHTS.md and PACKAGE.sha256; data and INDEX equal v1
+DATASET_VERSION = 1  # v2 and v3 (2026-10-11) change only the card and rights wording; Kaggle built no download
+# archive for them, so the notebook pins v1, whose data, INDEX.jsonl and member hashes are identical
 INDEX_SHA256 = "e92bbb9f20d1f7efb225d568e2a44a6ae3d59faab9079590e2dfad780458344d"
 DATASET_LICENSE = "CC BY 4.0"
 DEVELOPMENT_EXAMPLE_GROUP = "ph_96_766"  # a parent training sample: never used for selection or scoring
@@ -113,7 +114,7 @@ ATTRIBUTION = (
     "AlphaEarth Foundations Satellite Embedding (Google / Google DeepMind; Brown et al., 2025), CC BY 4.0 - carried "
     "in the dataset files; not read or shown by this notebook.\n"
     "Administrative regions: geoBoundaries PHL ADM1, CC BY 3.0 IGO.\n"
-    "Dataset compilation: Kurt Valcorza, rice-philippines-s2-alphaearth-v1-teaching (Kaggle, version 2), CC BY 4.0.\n"
+    "Dataset compilation: Kurt Valcorza, rice-philippines-s2-alphaearth-v1-teaching (Kaggle, version 1), CC BY 4.0.\n"
     "Model: ibm-nasa-geospatial/Prithvi-EO-2.0-300M (Apache-2.0), revision " + pp.MODEL_REVISION + ".\n"
 )
 
