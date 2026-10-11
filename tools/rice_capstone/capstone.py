@@ -1557,6 +1557,14 @@ def stage_report(ctx: Context) -> None:
     })
     check = bundle_results(ctx)
     ctx.receipt("report", zip_members=check["members"])
+    # The bundle must show its own reporting stage: add the report receipt to the summary and bundle again.
+    summary_path = ctx.out / "run_summary.json"
+    summary = read_json(summary_path)
+    summary["stages"]["report"] = read_json(ctx.work / "receipts" / "report.json")
+    write_json(summary_path, summary)
+    final = bundle_results(ctx)
+    if final["members"] != check["members"]:
+        raise RuntimeError(f"results.zip membership changed while finalising: {check} != {final}")
 
 
 def bundle_results(ctx: Context) -> dict[str, Any]:
@@ -1644,12 +1652,20 @@ def collect_byod(sources: Sequence[Path], target: Path) -> list[Path]:
             for path in sorted(source.rglob("*.h5")):
                 add(path.name, path, None, path.stat().st_size)
         elif source.suffix == ".zip":
-            with zipfile.ZipFile(source) as archive:
-                for info in archive.infolist():
-                    if info.filename.startswith("/") or ".." in Path(info.filename).parts:
-                        raise ChipError(f"{source.name}: unsafe member name {info.filename!r} (absolute or '..'); refused")
-                    if info.filename.endswith(".h5"):
-                        add(Path(info.filename).name, source, info.filename, info.file_size)
+            unreadable = ChipError(f"{source.name}: not a readable .zip archive (truncated, corrupted or misnamed); "
+                                   "re-create it or send the .h5 files directly")
+            if not zipfile.is_zipfile(source):
+                raise unreadable
+            try:
+                with zipfile.ZipFile(source) as archive:
+                    members = archive.infolist()
+            except (zipfile.BadZipFile, EOFError, OSError, ValueError) as exc:
+                raise unreadable from exc
+            for info in members:
+                if info.filename.startswith("/") or ".." in Path(info.filename).parts:
+                    raise ChipError(f"{source.name}: unsafe member name {info.filename!r} (absolute or '..'); refused")
+                if info.filename.endswith(".h5"):
+                    add(Path(info.filename).name, source, info.filename, info.file_size)
         elif source.suffix == ".h5":
             add(source.name, source, None, source.stat().st_size)
         else:
@@ -1660,13 +1676,21 @@ def collect_byod(sources: Sequence[Path], target: Path) -> list[Path]:
         if member is None:
             shutil.copy2(origin, target / name)
         else:
-            with zipfile.ZipFile(origin) as archive, archive.open(member) as source, (target / name).open("wb") as sink:
-                copied = 0
-                while chunk := source.read(1 << 20):  # bounded memory; the declared size is not trusted
-                    copied += len(chunk)
-                    if copied > BYOD_MAX_BYTES:
-                        raise ChipError(f"{origin.name}:{member} expands beyond {BYOD_MAX_BYTES // 2**30} GiB; refused")
-                    sink.write(chunk)
+            try:
+                with zipfile.ZipFile(origin) as archive, archive.open(member) as source, \
+                        (target / name).open("wb") as sink:
+                    copied = 0
+                    while chunk := source.read(1 << 20):  # bounded memory; the declared size is not trusted
+                        copied += len(chunk)
+                        if copied > BYOD_MAX_BYTES:
+                            raise ChipError(f"{origin.name}:{member} expands beyond {BYOD_MAX_BYTES // 2**30} GiB; "
+                                            "refused")
+                        sink.write(chunk)
+            except (zipfile.BadZipFile, EOFError, OSError, ValueError) as exc:
+                if isinstance(exc, ChipError):
+                    raise
+                raise ChipError(f"{origin.name}:{member} could not be extracted ({type(exc).__name__}); "
+                                "re-create the archive or send the .h5 files directly") from exc
     return sorted(target.glob("*.h5"))
 
 
@@ -1703,7 +1727,7 @@ def stage_byod(ctx: Context, sources: Sequence[Path]) -> None:
         p = head_probabilities(torch, _load_head(torch, params), features[cid][None])[0]
         canonical[cid] = p
         pred = (p >= manifest["threshold"]).astype(np.uint8)
-        if chip["label"] is not None:
+        if has_labelled_pixels(chip["label"]):  # an all-255 mask is prediction-only: keep every predicted pixel
             pred = np.where(chip["label"] == IGNORE, IGNORE, pred).astype(np.uint8)
         write_geotiff(out / "predictions" / f"{cid}_C.tif", pred, x_min=chip["attrs"].get("x_min"),
                       y_max=chip["attrs"].get("y_max"))
@@ -1779,6 +1803,18 @@ PREREQUISITES: dict[str, tuple[str, ...]] = {
 }
 
 
+def ancestors(stage: str) -> set[str]:
+    """Every stage that `stage` needs, directly or through another stage."""
+    found: set[str] = set()
+    frontier = [stage]
+    while frontier:
+        for name in PREREQUISITES.get(frontier.pop(), ()):
+            if name not in found:
+                found.add(name)
+                frontier.append(name)
+    return found
+
+
 def dependents(stage: str) -> set[str]:
     """Every stage that needs `stage`, directly or through another stage."""
     found: set[str] = set()
@@ -1796,8 +1832,9 @@ def start_stage(ctx: Context, stage: str) -> None:
     """Refuse to run `stage` until its prerequisite stages have completed, then clear its own receipt and those of
     all its dependents, which stay ineligible until the chain completes again."""
     receipts = ctx.work / "receipts"
-    if stage in ("evaluate", "finetune") and (ctx.work / "frozen.json").exists():
-        # refuse before touching any receipt, so a re-run of a scored directory never strands export/reload/report
+    if stage in {"evaluate", "finetune"} | ancestors("evaluate") and (ctx.work / "frozen.json").exists():
+        # Refuse before touching any receipt or output: a restart of scoring or anything upstream of it would leave the
+        # previous run's results.zip, metrics, predictions and adapter looking current if it then failed.
         raise RuntimeError(f"{stage}: validation was already scored in this run directory; scoring happens exactly "
                            "once. Start a fresh runtime to change a development choice")
     missing = [name for name in PREREQUISITES.get(stage, ()) if not (receipts / f"{name}.json").exists()]

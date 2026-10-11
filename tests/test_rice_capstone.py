@@ -317,6 +317,38 @@ def test_dropping_stale_fine_tuning_removes_its_output_records(tmp_path):
                                         ctx.work / "cft_validation_probs.npz"))
 
 
+def test_round_codex_6300e3b_findings(tmp_path):
+    import zipfile
+
+    # 4. after the freeze, scoring and every stage upstream of it refuse before touching anything.
+    assert cap.ancestors("evaluate") == {"prepare", "baseline", "features", "train-head", "activity"}
+    ctx = cap.Context(tmp_path / "run")
+    receipts = ctx.work / "receipts"
+    receipts.mkdir(parents=True, exist_ok=True)
+    for name in ("prepare", "baseline", "features", "train-head", "activity", "evaluate", "export"):
+        (receipts / f"{name}.json").write_text("{}")
+    (ctx.work / "frozen.json").write_text("{}")
+    for stage in ("prepare", "baseline", "features", "train-head", "activity", "evaluate", "finetune"):
+        with pytest.raises(RuntimeError, match="already scored"):
+            cap.start_stage(ctx, stage)
+    assert len(list(receipts.glob("*.json"))) == 7
+    cap.start_stage(ctx, "reload")  # downstream finishing stages may still run after the freeze
+    # 2. a corrupt or misnamed zip becomes an actionable refusal naming the archive.
+    bad = tmp_path / "chips.zip"
+    bad.write_bytes(b"this is not a zip archive")
+    with pytest.raises(cap.ChipError, match="chips.zip: not a readable .zip"):
+        cap.collect_byod([bad], tmp_path / "byod_input")
+    good = tmp_path / "good.zip"
+    with zipfile.ZipFile(good, "w", compression=zipfile.ZIP_DEFLATED) as handle:
+        handle.writestr("a_2020.h5", bytes(4096))
+    raw = bytearray(good.read_bytes())
+    start = raw.index(b"a_2020.h5") + len("a_2020.h5")
+    raw[start:start + 40] = bytes(40)  # corrupt the deflated payload but keep the directory readable
+    good.write_bytes(bytes(raw))
+    with pytest.raises(cap.ChipError, match="could not be extracted|not a readable"):
+        cap.collect_byod([good], tmp_path / "byod_input")
+
+
 def test_metric_edge_cases_report_null_with_reasons():
     no_rice = np.zeros((4, 4), dtype=np.uint8)
     silent = cap.scores(cap.confusion(np.zeros((4, 4)), no_rice, 0.5))
