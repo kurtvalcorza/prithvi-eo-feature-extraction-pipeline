@@ -107,25 +107,34 @@ def carrier_cell(files: dict[str, str]) -> str:
 
 TITLE = r"""# Rice From Space: What Does a Satellite Foundation Model Add?
 
-**DIMER Philippines Rice Mapping Capstone** · **Profile:** `E2E` · **Mode:** `WORKSHOP` · **Notebook standard:** DIMER Notebook Specification `2.3` · **Release status:** Candidate · **Model:** `ibm-nasa-geospatial/Prithvi-EO-2.0-300M` @ `9eb1b1102806` · **Data:** Kaggle `kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching`, version 1
+**DIMER Philippines Rice Mapping Capstone** · **Profile:** `E2E` · **Mode:** `WORKSHOP` · **Kind:** `CAPSTONE` · **Notebook standard:** DIMER Notebook Specification `2.4` · **Release status:** Candidate · **Model:** `ibm-nasa-geospatial/Prithvi-EO-2.0-300M` @ `9eb1b1102806` · **Data:** Kaggle `kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching`, version 1
+
+> **⚠️ Notice.** For research, training and evaluation only. Not validated for production,
+> clinical, diagnostic or safety-critical use. Running this notebook downloads third-party
+> model weights and datasets under their own licenses (see the model card) and uses compute
+> on your own Colab or Kaggle account. Data you bring stays in your runtime, and you are
+> responsible for having the right to use it. Results here are tutorial evidence, not
+> benchmarks. Everything is provided "as is", without warranty of any kind. To the maximum
+> extent permitted by law, the maintainers and the DIMER platform accept no liability for
+> its use. Its rice maps are not official crop statistics, area estimates or agricultural advice.
 
 **Driving question:** Given 32 labelled Sentinel-2 chips, does a head trained on frozen Prithvi-EO-2.0 features map Philippine rice better than a hand-built spectral-temporal baseline, and what can 8 validation chips actually establish?
 
-Rice paddies change through the year: fields are flooded, the crop greens up, and then it is harvested. Optical satellites see that cycle as a pattern over time, not in a single image (Xiao et al., 2005). In this notebook you will compare three ways of turning a year of Sentinel-2 observations (Drusch et al., 2012) into a rice map, and practise stating only what a small, clustered evaluation can support. It is an optional capstone after the *Rice from space* course lessons L3 (Sentinel-2 LightGBM) and L3B (AlphaEarth LightGBM); it links to them rather than re-teaching feature engineering.
+Rice paddies change through the year: fields are flooded, the crop greens up, and then it is harvested. Optical satellites see that cycle as a pattern over time, not in a single image [1]. In this notebook you will compare three ways of turning a year of Sentinel-2 observations [2] into a rice map, and practise stating only what a small, clustered evaluation can support. It is an optional capstone after the *Rice from space* course lessons [L3 (Sentinel-2 LightGBM)](https://www.kaggle.com/code/kurtvalcorza/rice-from-space-lesson-3-lightgbm-baseline) [11] and [L3B (AlphaEarth LightGBM)](https://www.kaggle.com/code/kurtvalcorza/rice-from-space-lesson-3b-alphaearth-baseline) [12] on Kaggle; it links to them rather than re-teaching feature engineering.
 
 **Who this notebook is for.** Learners who can open a hosted notebook, run cells in order and read short Python. No prior remote-sensing or deep-learning experience is assumed: each geospatial or evaluation term is explained at first use, and the glossary below collects them.
 
-**Prerequisites and runtime.** A fresh Google Colab session with a **T4 GPU** (Runtime → Change runtime type → T4 GPU) and at least 12 GiB free disk. No account, token, upload, DIMER service or Git clone is needed. The notebook downloads the public teaching dataset (about 350 MB), the 1.33 GB model checkpoint and a hash-locked Python 3.12.12 environment (Linux x86_64 only). Runtime and GPU memory are measured by the run and recorded, not promised here.
+**Prerequisites and runtime.** A fresh Google Colab session with a **T4 GPU** (Runtime → Change runtime type → T4 GPU) and at least 12 GiB free disk. No account, token, upload, DIMER service or Git clone is needed. The notebook downloads the public teaching dataset (about 350 MB), the 1.33 GB model checkpoint and a hash-locked Python 3.12.12 environment (Linux x86_64 only). **Expected runtime: about 10 minutes** for Run all on the default path, measured as 589 s on a fresh Colab Tesla T4 for the previous blob `33037307` (commit `d82963c`, Colab CLI sequential execution, 2026-10-11, including the 75 s environment setup); about 11 minutes (633 s) in the same environment with the fine-tune and bring-your-own-data sections switched on. Each run measures and records its own runtime and GPU memory.
 
-**Input → System → Output.** A year of six-band Sentinel-2 surface reflectance for a 2.56 km chip (24 calendar bins, 20 m pixels) → one of three systems: **A** call everything non-rice, **B** a LightGBM model on hand-built spectral-temporal features, or **C** a small head on frozen Prithvi-EO-2.0 features (Szwarcman et al., 2026) → a 0/1 rice map scored against a published rice map. The trained head is exported, reloaded in a fresh process and can score your own chips.
+**Input → System → Output.** A year of six-band Sentinel-2 surface reflectance for a 2.56 km chip (24 calendar bins, 20 m pixels) → one of three systems: **A** call everything non-rice, **B** a LightGBM model on hand-built spectral-temporal features, or **C** a small head on frozen Prithvi-EO-2.0 features [3] → a 0/1 rice map scored against a published rice map. The trained head is exported, reloaded in a fresh process and can score your own chips.
 
 ### Learning objectives
 
 By the end of this notebook you will be able to:
 
 1. **Explain** Sentinel-2 bands, 20 m pixels, cloud gaps and temporal compositing, and why rice is a temporal signal.
-2. **Build** the input a pretrained model expects — four quarterly frames, standardised, gaps filled — without resizing, and **identify** what was filled.
-3. **Train** a small head on frozen features and **compare** it with two baselines under a frozen protocol.
+2. **Trace** how the input a pretrained model expects is built — four quarterly frames, standardised, gaps filled — without resizing, and **identify** what was filled.
+3. **Run** the training of a small head on frozen features and **compare** it with two baselines under a frozen protocol.
 4. **Interpret** pooled precision, recall, F1 and IoU for a minority class, and **explain** why accuracy hides failure.
 5. **Run** one controlled experiment (one frame versus four) and **explain** the result.
 6. **Write** a bounded conclusion that states its evidence, its uncertainty and what it cannot claim.
@@ -145,17 +154,33 @@ By the end of this notebook you will be able to:
 | 1 | Prepare a reproducible, isolated runtime | Engineering |
 | 2 | Inspect the chips: bands, gaps, the rice season, the labels | Concept |
 | 3 | Predict, declare the protocol, and run baselines A and B | Evaluation practice |
-| 4 | Build Prithvi's input and extract frozen features | Concept |
+| 4 | Trace how Prithvi's input is built and extract frozen features | Concept |
 | 5 | Train head C on the fit chips; choose epoch and threshold on development | Concept |
 | 6 | Change one thing: one frame versus four | Evaluation practice |
 | 7 | Optional extension: fine-tune the encoder (off by default) | Evaluation practice |
 | 8 | Score A, B and C once on the validation chips | Evaluation practice |
 | 9 | Interpret: pooled and per-chip results, error maps, the 320 m patch effect | Evaluation practice |
 | 10 | Export, reload in a fresh process and verify | Engineering |
-| 11 | Conclude with evidence | Evaluation practice |
+| 11 | Read the run's answer and conclude with evidence | Evaluation practice |
 | 12 | Optional: bring your own chips | Engineering |
 
 **Evidence boundary.** 40 chip-years: 32 for training, 8 for validation, all validation chips from two regions (Central and Eastern Visayas). This is a teaching comparison, not a national accuracy estimate, and it stays Candidate until a browser Run all of this exact notebook, including the upload dialog, is recorded."""
+
+PROBLEM = r"""### Problem statement
+
+**Who has the problem.** Agencies, researchers and analysts who monitor rice in the Philippines and want a yearly map of where rice is grown, made from satellite imagery rather than from field surveys alone.
+
+**The task.** Turn a year of Sentinel-2 observations of a 2.56 km chip into a 20 m map that marks each pixel rice or non-rice.
+
+**What a useful outcome looks like.** On the 8 validation chips, which are scored once, a system is useful if its pooled rice F1 is clearly above the all-non-rice floor (A, F1 0). A pretrained foundation model adds something here only if its head (C) reaches a higher pooled rice F1 than the hand-built spectral-temporal baseline (B) on the same pixels. Section 10 states this run's answer from its own validation table.
+
+**Scope boundary.** This notebook does not estimate rice area, cropping intensity or planting dates, does not forecast early in the season, and makes no national or operational accuracy claim.
+
+### Data context
+
+The sample is the public Kaggle dataset *Philippines Rice S2 AlphaEarth v1 Teaching*, version 1 [9] (CC BY 4.0), compiled by Kurt Valcorza. It is a 40-chip teaching subset of a larger benchmark of Philippine chips from 2019–2021: 32 training chips and 8 validation chips, each 128 × 128 pixels at 20 m (about 350 MB in total). Each chip holds 24 calendar-bin median composites of six Sentinel-2 surface-reflectance bands (modified Copernicus Sentinel data [2]), a validity mask, AlphaEarth annual embeddings [8] (not used here), and a label from published 20 m annual rice maps [4]: 0 non-rice, 1 rice, 255 ignore.
+
+**How representative it is.** The chips were chosen by a seeded geographic sampling rule that favours rice-containing chips, not drawn as a probability sample, and all 8 validation chips come from two neighbouring regions (PH-07 Central Visayas, PH-08 Eastern Visayas). Rice is a minority of the labelled pixels. Labels are map products, not field observations. Whether Prithvi-EO-2.0's pretraining imagery covered these places is unknown. These gaps limit the results to tutorial evidence about these chips."""
 
 GLOSSARY = r"""<details>
 <summary><strong>Glossary</strong> — open when a term is unfamiliar</summary>
@@ -163,13 +188,13 @@ GLOSSARY = r"""<details>
 | Term | Meaning in this notebook |
 |---|---|
 | **Pixel** | One grid cell; here 20 m × 20 m on the ground. A chip is 128 × 128 pixels = 2.56 km square. |
-| **Band** | One measured wavelength range. We use six Sentinel-2 bands: blue B2, green B3, red B4, narrow near-infrared B8A, shortwave-infrared B11 and B12 (Drusch et al., 2012). |
+| **Band** | One measured wavelength range. We use six Sentinel-2 bands: blue B2, green B3, red B4, narrow near-infrared B8A, shortwave-infrared B11 and B12 [2]. |
 | **Surface reflectance** | The fraction of sunlight a surface reflects after atmospheric correction. The chips store it directly (digital number × 0.0001). |
 | **Calendar bin / compositing** | The year is cut into 24 equal bins; each bin holds the median of the cloud-free observations that fell in it. Empty bins are missing, not zero. |
 | **Valid mask** | `S2_valid` is 1 where a bin has a cloud-free observation. Missing values are NaN and are never read as reflectance. |
 | **NDVI** | (NIR − red) / (NIR + red): high for green vegetation, low for water and bare soil. |
 | **Label** | 0 non-rice, 1 rice, 255 ignore (including a 20 m band along class edges). Ignored pixels are never scored. |
-| **Foundation model** | A large model pretrained on broad data and then adapted; Prithvi-EO-2.0 is one for Earth observation (Szwarcman et al., 2026). |
+| **Foundation model** | A large model pretrained on broad data and then adapted; Prithvi-EO-2.0 is one for Earth observation [3]. |
 | **Frozen features / head** | The pretrained encoder's internal outputs, used without changing its weights; the *head* is the small trainable layer on top. |
 | **Patch / token** | Prithvi cuts each frame into 16 × 16 pixel patches (320 m here) and describes each with a 1024-number *token*. |
 | **Fit / development / validation** | Fit chips train models; development chips make every choice; validation chips are scored once, at the end. |
@@ -365,10 +390,10 @@ SEC2 = r"""## 2. Inspect the chips · [Concept]
 
 The teaching dataset holds 40 chip-years from 2019–2021: 32 in training regions and 8 in validation regions (PH-07 Central Visayas and PH-08 Eastern Visayas). Each chip is 128 × 128 pixels at 20 m in UTM zone 51N (EPSG:32651).
 
-- **Bands.** Six Sentinel-2 bands in the order the model expects: blue B2, green B3, red B4, narrow near-infrared B8A, and shortwave-infrared B11 and B12 (Drusch et al., 2012). Visible light shows colour; near-infrared is bright over healthy leaves; shortwave infrared drops over water and wet soil.
+- **Bands.** Six Sentinel-2 bands in the order the model expects: blue B2, green B3, red B4, narrow near-infrared B8A, and shortwave-infrared B11 and B12 [2]. Visible light shows colour; near-infrared is bright over healthy leaves; shortwave infrared drops over water and wet soil.
 - **Compositing and gaps.** The year is split into 24 equal calendar bins. Each bin is the median of that bin's cloud-free observations; where clouds hid every observation, the bin is missing (NaN, `S2_valid` = 0). The Philippines is cloudy, so gaps are normal.
-- **Why rice is temporal.** A paddy is flooded before transplanting (dark in shortwave infrared, low NDVI), then greens up quickly (NDVI rises), then is harvested (NDVI falls). One image can confuse young rice with water or grass; the sequence is distinctive (Xiao et al., 2005).
-- **Labels.** Annual rice maps from Chen et al. (2025), reprojected to the chip grid: 0 non-rice, 1 rice, 255 ignore, including a 20 m band along class edges. They are published map products, not field observations.
+- **Why rice is temporal.** A paddy is flooded before transplanting (dark in shortwave infrared, low NDVI), then greens up quickly (NDVI rises), then is harvested (NDVI falls). One image can confuse young rice with water or grass; the sequence is distinctive [1].
+- **Labels.** Annual rice maps from Chen et al. [4], reprojected to the chip grid: 0 non-rice, 1 rice, 255 ignore, including a 20 m band along class edges. They are published map products, not field observations.
 
 **Input:** the public dataset, verified against the pinned `INDEX.jsonl` digest and every chip's SHA-256. **System:** schema checks, frame selection and three deliberate refusal probes. **Output:** a per-chip table, composites, an NDVI series and valid-observation counts by bin. The development example shipped with the dataset is a training sample from the parent study, so it is never read.
 
@@ -393,7 +418,7 @@ SEC3 = r"""## 3. Predict, declare the protocol and run the baselines · [Evaluat
 
 **Predict first:** where do you expect a pretrained model and a hand-built baseline to disagree — field edges, cloudy chips, small fields, wet but non-rice land? Write one guess.
 
-**Roles.** The 32 training chips are split by **whole region** into **fit** (trains models) and **development** (makes every choice) with a declared, seeded rule: regions are ordered by a SHA-256 hash and added to development until it holds about 25 % of chips with at least two rice chips. Whole regions keep neighbouring chips out of both roles, because nearby pixels and chips are not independent (Roberts et al., 2017). The 8 **validation** chips are scored once, after every choice is frozen. The development example is never used.
+**Roles.** The 32 training chips are split by **whole region** into **fit** (trains models) and **development** (makes every choice) with a declared, seeded rule: regions are ordered by a SHA-256 hash and added to development until it holds about 25 % of chips with at least two rice chips. Whole regions keep neighbouring chips out of both roles, because nearby pixels and chips are not independent [5]. The 8 **validation** chips are scored once, after every choice is frozen. The development example is never used.
 
 **Frozen rules (written to `selection.json`).**
 - A threshold is chosen on development from 0.10 to 0.90 in steps of 0.05 by the highest pooled development rice F1; ties go to the threshold closest to 0.5, then the lower one. A pixel is rice when its score is **≥** the threshold.
@@ -402,9 +427,9 @@ SEC3 = r"""## 3. Predict, declare the protocol and run the baselines · [Evaluat
 
 **Systems.**
 - **A — all non-rice:** predicts non-rice everywhere. Rice is a minority class, so A can score high accuracy while finding nothing.
-- **B — spectral-temporal LightGBM:** the course study's M1 recipe — 70 features per pixel (per-band mean, spread, minimum, maximum and 10th/50th/90th percentiles over the observed year; quarterly band means; quarterly valid fractions) — on a class-stratified sample of at most 65,536 fit pixels, one fixed configuration (31 leaves), early stopping on development. Lesson L3 teaches this recipe.
+- **B — spectral-temporal LightGBM:** the course study's M1 recipe — 70 features per pixel (per-band mean, spread, minimum, maximum and 10th/50th/90th percentiles over the observed year; quarterly band means; quarterly valid fractions) — on a class-stratified sample of at most 65,536 fit pixels, one fixed configuration (31 leaves), early stopping on development. Lesson [L3](https://www.kaggle.com/code/kurtvalcorza/rice-from-space-lesson-3-lightgbm-baseline) [11] teaches this recipe.
 
-**Metrics.** Counts are pooled over every pixel with `label ≠ 255`. Rice F1 is primary; IoU, precision and recall are reported beside it, and accuracy only to show why it misleads. For an imbalanced class, precision-based measures stay informative where accuracy does not (Saito & Rehmsmeier, 2015). A ratio with a zero denominator is reported as **undefined** with its reason, never as 0 or 1.
+**Metrics.** Counts are pooled over every pixel with `label ≠ 255`. Rice F1 is primary; IoU, precision and recall are reported beside it, and accuracy only to show why it misleads. For an imbalanced class, precision-based measures stay informative where accuracy does not [6]. A ratio with a zero denominator is reported as **undefined** with its reason, never as 0 or 1.
 
 **Expected result:** B's threshold sweep on development and a two-row development table."""
 
@@ -421,9 +446,9 @@ If about nine in ten development pixels are non-rice, A scores about 0.9 accurac
 
 </details>"""
 
-SEC4 = r"""## 4. Build Prithvi's input and extract frozen features · [Concept]
+SEC4 = r"""## 4. Trace how Prithvi's input is built and extract frozen features · [Concept]
 
-**Input:** each chip's 24 bins. **Model:** Prithvi-EO-2.0-300M, a vision transformer pretrained by masked reconstruction of multispectral, multitemporal imagery (Szwarcman et al., 2026), loaded from an immutable revision. **Output:** for every chip, an 8 × 8 grid of 1024-number features from encoder block 12.
+**Input:** each chip's 24 bins. **Model:** Prithvi-EO-2.0-300M, a vision transformer pretrained by masked reconstruction of multispectral, multitemporal imagery [3], loaded from an immutable revision of its model card [10]. **Output:** for every chip, an 8 × 8 grid of 1024-number features from encoder block 12.
 
 How the input is built, and what each step costs:
 
@@ -432,6 +457,8 @@ How the input is built, and what each step costs:
 3. **Gaps.** After standardisation every missing value is set to 0, which is the pretraining mean. The filled share is recorded per chip and per frame. Pixels with no observation in any chosen frame stay in the scoring, as in the course study.
 4. **No resizing.** Prithvi was pretrained on 30 m Harmonized Landsat–Sentinel (HLS) data; these chips are 20 m Sentinel-2 surface reflectance. We do not resample to 30 m to hide the mismatch: the model sees finer pixels than it was trained on, and the processing level is close to, but not the same as, HLS. Both are stated limitations.
 5. **Patches.** Each 16 × 16 pixel patch — **320 m** at 20 m — becomes one token. A 128-pixel chip gives 8 × 8 patches per frame. Block 12 of 24 is fixed in advance (the repository's validated `FEATURE_LAYER`); there is no layer sweep. Tokens are averaged over the four frames.
+
+Steps 1–3 are the functions `select_frames` and `prithvi_input` in `capstone.py`, which the second Infrastructure cell (*write and verify the embedded source*) writes to the run directory printed in Section 1; open it from the file browser under `outputs/philippines_rice/`. Reading them is optional; the steps above describe what they do.
 
 The upstream checkpoint is a pickle. Its imported globals are audited statically against a pinned digest, it is unpickled once with torch's `weights_only` loader and converted to safetensors, and the model is loaded strictly from the verified file. No downloaded model code is executed. Features are computed once in float32 with deterministic GPU settings and cached, so later stages train on the cache.
 
@@ -452,7 +479,7 @@ Four frames × 8 × 8 patches = 256 patch tokens, plus one class token = 257; th
 
 SEC5 = r"""## 5. Train head C on the fit chips · [Concept]
 
-**System C:** the frozen block-12 features → a 1 × 1 convolution from 1024 to 256 channels → GELU → a 1 × 1 convolution to 2 classes → bilinear upsampling from 8 × 8 to 128 × 128 pixels. Loss: cross-entropy with label 255 ignored, no class weights. Fixed in advance: AdamW, learning rate 0.001, weight decay 0.01, batch 8, at most 30 epochs, seed 0, no augmentation. The epoch with the highest development rice F1 at 0.5 is kept (earliest on ties), then C's threshold is chosen on development with the same rule as B. Training runs on the cached features, so it takes seconds.
+**System C:** the frozen block-12 features → a 1 × 1 convolution from 1024 to 256 channels → GELU → a 1 × 1 convolution to 2 classes → bilinear upsampling from 8 × 8 to 128 × 128 pixels. Loss: cross-entropy with label 255 ignored, no class weights. Fixed in advance: AdamW, learning rate 0.001, weight decay 0.01, batch 8, at most 30 epochs, seed 0, no augmentation. The epoch with the highest development rice F1 at 0.5 is kept (earliest on ties), then C's threshold is chosen on development with the same rule as B. Training runs on the cached features, so it takes seconds. The head is `_head_module` and the training loop `train_head` in the same `capstone.py`.
 
 **Predict before running:** will the development loss keep falling for 30 epochs? Will C's development F1 beat B's?"""
 
@@ -493,7 +520,7 @@ Usually T = 4 beats every single quarter, and the best quarter is one that catch
 
 SEC7 = r"""## 7. Optional extension: fine-tune the encoder (C-FT) · [Evaluation practice]
 
-Switched off by default. When `RUN_FINETUNE` is ticked, a separate system **C-FT** unfreezes the patch embedding, the CLS token and encoder blocks 1–12 (the blocks that feed block 12; blocks 13–24 and the decoder stay frozen) and trains them with a fresh head under the same fit/development protocol: AdamW (encoder 0.00001, head 0.001), batch 4, 10 epochs fixed in advance, fp16 mixed precision, epoch and threshold chosen on development. Its validation predictions are computed without labels at the selected epoch and stay sealed; C-FT is scored in Section 8 only because it was selected **before** validation scoring. If you tick it after Section 8 has run, the stage refuses: a model chosen after seeing validation results would be exploratory. The run records its peak GPU memory with the full AdamW state. For scale, recorded Colab CLI runs of an earlier blob of this notebook on a Tesla T4 (2026-10-11, recorded in `docs/release-verification.md`) measured a 4.40 GiB peak for this stage. The canonical comparison and the exported artifact remain the frozen-encoder system C.
+Switched off by default. When `RUN_FINETUNE` is ticked, a separate system **C-FT** unfreezes the patch embedding, the CLS token and encoder blocks 1–12 (the blocks that feed block 12; blocks 13–24 and the decoder stay frozen) and trains them with a fresh head under the same fit/development protocol: AdamW (encoder 0.00001, head 0.001), batch 4, 10 epochs fixed in advance, fp16 mixed precision, epoch and threshold chosen on development. Its validation predictions are computed without labels at the selected epoch and stay sealed; C-FT is scored in Section 8 only because it was selected **before** validation scoring. If you tick it after Section 8 has run, the stage refuses: a model chosen after seeing validation results would be exploratory. The run records its peak GPU memory with the full AdamW state. For scale (not re-run here): the recorded Colab CLI runs with the fine-tune switched on, of the earlier blobs `c1c966bb` (commit `d6956ab`) and `33037307` (commit `d82963c`) on a Tesla T4 on 2026-10-11, each measured a 4.404 GiB peak for this stage (see `docs/release-verification.md` in the host repository). The canonical comparison and the exported artifact remain the frozen-encoder system C.
 
 To use it: tick the box, then Runtime → Run all on a fresh runtime.
 
@@ -523,9 +550,9 @@ SEC9 = r"""## 9. Interpret the result · [Evaluation practice]
 
 **Pooled first.** The first table is the comparison: one pooled F1, IoU, precision and recall per system over the same labelled pixels. **Per chip second**, for diagnosis only. Two validation chips contain no reference rice: their recall is undefined, and their F1 is undefined if a system also predicts no rice there (or 0 if it predicts any). Undefined values are printed with their reason, never averaged in as numbers.
 
-**What the evidence can bear.** Eight chips from two neighbouring regions, many of them close together. Pixels and chips are spatially dependent, so treating them as independent samples would overstate confidence (Roberts et al., 2017), and spatially naive validation can make mapping models look far better than they are (Ploton et al., 2020). We therefore compute no significance tests and no confidence intervals, and make no national or operational claim. Labels are published map products, so disagreement is not proof of model error. Whether Prithvi's pretraining imagery included these places is unknown.
+**What the evidence can bear.** Eight chips from two neighbouring regions, many of them close together. Pixels and chips are spatially dependent, so treating them as independent samples would overstate confidence [5], and spatially naive validation can make mapping models look far better than they are [7]. We therefore compute no significance tests and no confidence intervals, and make no national or operational claim. Labels are published map products, so disagreement is not proof of model error. Whether Prithvi's pretraining imagery included these places is unknown.
 
-**For reference only (not re-run here):** on the same 8 validation chips, the course lessons report teaching-scale F1 of **0.760** for Sentinel-2 LightGBM (L3) and **0.928** for AlphaEarth LightGBM (L3B). Those are lesson results with their own caveats — in particular, they chose their threshold on these same validation chips, so they are development scores, not held-out ones. AlphaEarth annual embeddings (Brown et al., 2025) combine several sensors and had crop-related supervision; they are not used by A, B or C.
+**For reference only (not re-run here):** on the same 8 validation chips, the course lessons report teaching-scale F1 of **0.760** for Sentinel-2 LightGBM ([Lesson 3](https://www.kaggle.com/code/kurtvalcorza/rice-from-space-lesson-3-lightgbm-baseline) [11], Kaggle version 4, notebook code SHA-256 `c30514a4…`) and **0.928** for AlphaEarth LightGBM ([Lesson 3B](https://www.kaggle.com/code/kurtvalcorza/rice-from-space-lesson-3b-alphaearth-baseline) [12], Kaggle version 3, notebook code SHA-256 `e98f6a57…`). Those are lesson results with their own caveats — in particular, they chose their threshold on these same validation chips, so they are development scores, not held-out ones. AlphaEarth annual embeddings [8] combine several sensors and had crop-related supervision; they are not used by A, B or C.
 
 The next cell shows the error maps for every validation chip (TP, FP, FN, TN; ignored pixels grey), where B and C disagree, and the 320 m patch effect on the chip with the most rice."""
 
@@ -544,9 +571,11 @@ SEC10 = r"""## 10. Export, reload in a fresh process and verify · [Engineering]
 
 **Exported artifact:** `head_adapter/` — `adapter.safetensors` (the head's four tensors only; no base weights, no training data) and `manifest.json` (format, base model revision and converted-weights digest, feature block, frame rule, normalisation, threshold, training configuration, selection basis, file sizes and SHA-256). A consumer needs the base model at the recorded revision plus this folder.
 
-**Fresh reload:** a new process verifies the artifact's digests, rebuilds the base model strictly from verified files, recomputes the validation chips' features from the HDF5 files, and compares the reloaded head's scores with the evaluation's scores (tolerance 0.0001) and decisions (must be identical). It reopens the prediction GeoTIFFs (0 non-rice, 1 rice, 255 not scored; EPSG:32651, 20 m) and recomputes the metrics from them. Passing shows the saved computation is reproducible from files; it does not show the model or the labels are right.
+**Fresh reload:** a new process verifies the artifact's digests, rebuilds the base model strictly from verified files, recomputes the validation chips' features from the HDF5 files, and compares the reloaded head's scores with the evaluation's scores (tolerance 0.0001) and decisions (must be identical). It reopens the prediction GeoTIFFs (EPSG:32651, 20 m) and recomputes the metrics from them.
 
-**Expected result:** a verification table whose checks are all true, a download link for `results.zip` (records, tables, figures, GeoTIFFs, the adapter, attribution and `checksums.json`; no source imagery or base weights) and a conclusion scaffold."""
+**Prediction files, per validation chip:** `<chip>_C.tif` is the scored map (0 non-rice, 1 rice, 255 where the reference label is ignored, so it reproduces the evaluation); `<chip>_C_all_pixels.tif` gives C's decision for every pixel; `<chip>_C_score.tif` holds C's rice score in [0, 1] as float32, so you can apply a different threshold. The reload checks all three against the evaluation's scores. Passing shows the saved computation is reproducible from files; it does not show the model or the labels are right.
+
+**Expected result:** a verification table whose checks are all true, a download link for `results.zip` (records, tables, figures, GeoTIFFs, the adapter, attribution and `checksums.json`; no source imagery or base weights), and then **this run's answer** to the driving question — the validation metrics, whether C scored above B, and the evidence level — followed by a conclusion scaffold."""
 
 CELL_EXPORT = r"""run_stage('export')
 run_stage('reload')
@@ -557,7 +586,7 @@ display(Markdown((ROOT / 'outputs' / 'conclusion.md').read_text(encoding='utf-8'
 
 SEC11 = r"""## 11. Conclude with evidence · [Evaluation practice]
 
-Complete the scaffold above in your own words. A strong conclusion states the task and pixel population, reports every system on the same pixels — including a baseline that may have won — names the frame activity's result, uses the error maps to say *where* systems differ, and states the limits: eight validation chips from two regions, spatial clustering, map-derived labels, the 20 m versus 30 m mismatch, the 320 m patch grid and unknown pretraining overlap.
+The output above ends with **This run's answer**, written from the validation table the run just produced: it states whichever result occurred, with its evidence level. Read it, then complete the conclusion scaffold that follows it in your own words. A strong conclusion states the task and pixel population, reports every system on the same pixels — including a baseline that may have won — names the frame activity's result, uses the error maps to say *where* systems differ, and states the limits: eight validation chips from two regions, spatial clustering, map-derived labels, the 20 m versus 30 m mismatch, the 320 m patch grid and unknown pretraining overlap.
 
 <details>
 <summary>Check your reasoning: what makes a conclusion strong? (open after writing yours)</summary>
@@ -566,11 +595,15 @@ Strong: "On the labelled pixels of eight validation chips in Central and Eastern
 
 </details>
 
-**Transfer:** Lessons L3 and L3B show the feature-engineering and embedding routes in depth; Section 12 lets you score your own chips with the exported head and, with enough labelled sites, adapt a new head under the same protocol."""
+**Transfer:** Lessons [L3](https://www.kaggle.com/code/kurtvalcorza/rice-from-space-lesson-3-lightgbm-baseline) [11] and [L3B](https://www.kaggle.com/code/kurtvalcorza/rice-from-space-lesson-3b-alphaearth-baseline) [12] show the feature-engineering and embedding routes in depth; Section 12 lets you score your own chips with the exported head and, with enough labelled sites, adapt a new head under the same protocol."""
 
 SEC12 = r"""## 12. Optional: bring your own chips · [Engineering]
 
-Switched off by default, so Run all never waits for an upload. Tick `USE_BYOD`, then either set `BYOD_PATH` to a folder or `.zip` already in this runtime, or leave it empty to get an upload dialog (Colab).
+Switched off by default, so Run all never waits for an upload. After Run all has finished:
+
+1. Tick `USE_BYOD`.
+2. Either set `BYOD_PATH` to a folder or `.zip` already in this runtime, or leave it empty to get an upload dialog (Colab).
+3. Run this cell (the code cell below). You do not need to Run all again: it uses the head exported earlier in this session. If the runtime has restarted since then, Run all first.
 
 **Required format — this dataset's own schema (checked before any model runs):**
 
@@ -625,44 +658,54 @@ LICENCES = r"""## Data, model, attribution and licences
 
 **Data:** `kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching`, version 1 (public, CC BY 4.0; later versions change only the card and rights wording, with identical data files), verified by `INDEX.jsonl` SHA-256 `e92bbb9f20d1f7efb225d568e2a44a6ae3d59faab9079590e2dfad780458344d` and every chip's SHA-256. Component attribution, from the dataset's rights file:
 
-- **Rice labels:** Chen et al., *20 m resolution maps of paddy rice cropping intensity and planting dates in Monsoon Asia from 2018 to 2021* (Chen et al., 2025), https://doi.org/10.5281/zenodo.15124936, CC BY 4.0 — reprojected, converted to binary and given an ignored edge band.
+- **Rice labels:** Chen et al., *20 m resolution maps of paddy rice cropping intensity and planting dates in Monsoon Asia from 2018 to 2021* [4], https://doi.org/10.5281/zenodo.15124936, CC BY 4.0 — reprojected, converted to binary and given an ignored edge band.
 - **Optical inputs:** Contains modified Copernicus Sentinel data 2019–2021 (cloud/quality masking, six-band selection, 20 m resampling, 24 annual median bins), under the Copernicus Sentinel data terms.
-- **AlphaEarth Foundations Satellite Embedding** (Google and Google DeepMind; Brown et al., 2025), CC BY 4.0 — present in the dataset files; not read or shown by this notebook.
+- **AlphaEarth Foundations Satellite Embedding** (Google and Google DeepMind) [8], CC BY 4.0 — present in the dataset files; not read or shown by this notebook.
 - **Regional boundaries:** geoBoundaries PHL ADM1 (2020 vintage; NAMRIA/PSA/OCHA), CC BY 3.0 IGO.
 - **Dataset compilation:** Kurt Valcorza, CC BY 4.0. Component terms continue to apply.
 
-**Model:** `ibm-nasa-geospatial/Prithvi-EO-2.0-300M` at revision `9eb1b1102806593963daa333bcc491b1c6f8562f` (checkpoint SHA-256 `faab2c8b776f0723f93431747603a7ec586a54fc45473613b4322c29752486e7`), Apache-2.0 (Szwarcman et al., 2026). The carried repository code is Apache-2.0. The exported head contains no base weights and no training data.
+**Model:** `ibm-nasa-geospatial/Prithvi-EO-2.0-300M` at revision `9eb1b1102806593963daa333bcc491b1c6f8562f` (checkpoint SHA-256 `faab2c8b776f0723f93431747603a7ec586a54fc45473613b4322c29752486e7`), Apache-2.0 [3], [10]. The carried repository code is Apache-2.0. The exported head contains no base weights and no training data.
 
 **AI Assistance Disclosure:** Generative AI assisted this notebook's code and technical writing under maintainer direction, including checking scholarly references through the Scite literature service. The maintainer remains responsible for reviewing the implementation, validating results and making release decisions. AI assistance is not independent verification, provider endorsement or release approval.
 
 ## References
 
-Brown, C. F., Kazmierski, M. R., Pasquarella, V. J., Rucklidge, W. J., Samsikova, M., Zhang, C., Shelhamer, E., Lahera, E., Wiles, O., Ilyushchenko, S., Gorelick, N., Zhang, L. L., Alj, S., Schechter, E., Askay, S., Guinan, O., Moore, R., Boukouvalas, A., & Kohli, P. (2025). *AlphaEarth Foundations: An embedding field model for accurate and efficient global mapping from sparse label data* [Preprint]. arXiv. https://doi.org/10.48550/arXiv.2507.22291
+[1] X. Xiao et al., "Mapping paddy rice agriculture in southern China using multi-temporal MODIS images," *Remote Sens. Environ.*, vol. 95, no. 4, pp. 480–492, 2005, doi: 10.1016/j.rse.2004.12.009. [Online]. Available: https://doi.org/10.1016/j.rse.2004.12.009
 
-Chen, Y., Liang, S., Li, W., Ma, H., Fang, H., & Xu, J. (2025). *20 m resolution maps of paddy rice cropping intensity and planting dates in Monsoon Asia from 2018 to 2021* [Data set]. Zenodo. https://doi.org/10.5281/zenodo.15124936
+[2] M. Drusch et al., "Sentinel-2: ESA's optical high-resolution mission for GMES operational services," *Remote Sens. Environ.*, vol. 120, pp. 25–36, 2012, doi: 10.1016/j.rse.2011.11.026. [Online]. Available: https://doi.org/10.1016/j.rse.2011.11.026
 
-Drusch, M., Del Bello, U., Carlier, S., Colin, O., Fernandez, V., Gascon, F., Hoersch, B., Isola, C., Laberinti, P., Martimort, P., Meygret, A., Spoto, F., Sy, O., Marchese, F., & Bargellini, P. (2012). Sentinel-2: ESA's optical high-resolution mission for GMES operational services. *Remote Sensing of Environment, 120*, 25–36. https://doi.org/10.1016/j.rse.2011.11.026
+[3] D. Szwarcman et al., "Prithvi-EO-2.0: A versatile multitemporal foundation model for Earth observation applications," *IEEE Trans. Geosci. Remote Sens.*, vol. 64, pp. 1–20, 2026, doi: 10.1109/TGRS.2025.3642610. [Online]. Available: https://doi.org/10.1109/TGRS.2025.3642610
 
-Ploton, P., Mortier, F., Réjou-Méchain, M., Barbier, N., Picard, N., Rossi, V., Dormann, C. F., Cornu, G., Viennois, G., Bayol, N., Lyapustin, A., Gourlet-Fleury, S., & Pélissier, R. (2020). Spatial validation reveals poor predictive performance of large-scale ecological mapping models. *Nature Communications, 11*(1). https://doi.org/10.1038/s41467-020-18321-y
+[4] Y. Chen, S. Liang, W. Li, H. Ma, H. Fang, and J. Xu, "20 m resolution maps of paddy rice cropping intensity and planting dates in Monsoon Asia from 2018 to 2021," Zenodo, 2025, data set, doi: 10.5281/zenodo.15124936. [Online]. Available: https://doi.org/10.5281/zenodo.15124936
 
-Roberts, D. R., Bahn, V., Ciuti, S., Boyce, M. S., Elith, J., Guillera-Arroita, G., Hauenstein, S., Lahoz-Monfort, J. J., Schröder, B., Thuiller, W., Warton, D. I., Wintle, B. A., Hartig, F., & Dormann, C. F. (2017). Cross-validation strategies for data with temporal, spatial, hierarchical, or phylogenetic structure. *Ecography, 40*(8), 913–929. https://doi.org/10.1111/ecog.02881
+[5] D. R. Roberts et al., "Cross-validation strategies for data with temporal, spatial, hierarchical, or phylogenetic structure," *Ecography*, vol. 40, no. 8, pp. 913–929, 2017, doi: 10.1111/ecog.02881. [Online]. Available: https://doi.org/10.1111/ecog.02881
 
-Saito, T., & Rehmsmeier, M. (2015). The precision-recall plot is more informative than the ROC plot when evaluating binary classifiers on imbalanced datasets. *PLOS ONE, 10*(3), e0118432. https://doi.org/10.1371/journal.pone.0118432
+[6] T. Saito and M. Rehmsmeier, "The precision-recall plot is more informative than the ROC plot when evaluating binary classifiers on imbalanced datasets," *PLOS ONE*, vol. 10, no. 3, Art. no. e0118432, 2015, doi: 10.1371/journal.pone.0118432. [Online]. Available: https://doi.org/10.1371/journal.pone.0118432
 
-Szwarcman, D., Roy, S., Fraccaro, P., Gíslason, Þ. E., Blumenstiel, B., Ghosal, R., de Oliveira, P. H., Almeida, J., Sedona, R., Kang, Y., Chakraborty, S., Wang, S., Gomes, C. A., Kumar, A., Gaur, V., Truong, M., Godwin, D., Khallaghi, S., Lee, H., … Ramachandran, R. (2026). Prithvi-EO-2.0: A versatile multitemporal foundation model for Earth observation applications. *IEEE Transactions on Geoscience and Remote Sensing, 64*, 1–20. https://doi.org/10.1109/TGRS.2025.3642610
+[7] P. Ploton et al., "Spatial validation reveals poor predictive performance of large-scale ecological mapping models," *Nature Commun.*, vol. 11, no. 1, 2020, doi: 10.1038/s41467-020-18321-y. [Online]. Available: https://doi.org/10.1038/s41467-020-18321-y
 
-Xiao, X., Boles, S., Liu, J., Zhuang, D., Frolking, S., Li, C., Salas, W., & Moore, B. (2005). Mapping paddy rice agriculture in southern China using multi-temporal MODIS images. *Remote Sensing of Environment, 95*(4), 480–492. https://doi.org/10.1016/j.rse.2004.12.009
+[8] C. F. Brown et al., "AlphaEarth Foundations: An embedding field model for accurate and efficient global mapping from sparse label data," 2025, arXiv:2507.22291, doi: 10.48550/arXiv.2507.22291. [Online]. Available: https://doi.org/10.48550/arXiv.2507.22291
 
-**Data and software sources:** [Teaching dataset on Kaggle](https://www.kaggle.com/datasets/kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching) · [Prithvi-EO-2.0-300M model card](https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-2.0-300M) · [Host repository](https://github.com/kurtvalcorza/prithvi-eo-feature-extraction-pipeline) · DIMER Notebook Specification 2.3 (maintained in the DIMER fleet specifications) · [Reference capstone](https://github.com/kurtvalcorza/prithvi-flood-segmentation-pipeline/blob/main/tutorials/DIMER_Philippines_Flood_Mapping_Capstone.ipynb)"""
+[9] K. Valcorza, "Philippines Rice S2 AlphaEarth v1 Teaching," Kaggle, data set, version 1, Oct. 2026. [Online]. Available: https://www.kaggle.com/datasets/kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching/versions/1
+
+[10] IBM and NASA, "Prithvi-EO-2.0-300M," Hugging Face model card, revision 9eb1b1102806593963daa333bcc491b1c6f8562f. [Online]. Available: https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-2.0-300M/tree/9eb1b1102806593963daa333bcc491b1c6f8562f
+
+[11] K. Valcorza, "Rice from space — Lesson 3: LightGBM baseline," Kaggle notebook, version 4, Oct. 2026. [Online]. Available: https://www.kaggle.com/code/kurtvalcorza/rice-from-space-lesson-3-lightgbm-baseline
+
+[12] K. Valcorza, "Rice from space — Lesson 3B: AlphaEarth baseline," Kaggle notebook, version 3, Oct. 2026. [Online]. Available: https://www.kaggle.com/code/kurtvalcorza/rice-from-space-lesson-3b-alphaearth-baseline
+
+**Data and software sources:** [Teaching dataset on Kaggle, version 1](https://www.kaggle.com/datasets/kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching/versions/1) · [Prithvi-EO-2.0-300M model card at the pinned revision](https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-2.0-300M/tree/9eb1b1102806593963daa333bcc491b1c6f8562f) · [Host repository](https://github.com/kurtvalcorza/prithvi-eo-feature-extraction-pipeline) · [Lesson 3](https://www.kaggle.com/code/kurtvalcorza/rice-from-space-lesson-3-lightgbm-baseline) and [Lesson 3B](https://www.kaggle.com/code/kurtvalcorza/rice-from-space-lesson-3b-alphaearth-baseline) of *Rice from space* · DIMER Notebook Specification 2.4 (maintained in the DIMER fleet specifications) · [Reference capstone](https://github.com/kurtvalcorza/prithvi-flood-segmentation-pipeline/blob/main/tutorials/DIMER_Philippines_Flood_Mapping_Capstone.ipynb)"""
 
 INFRA = {"cellView": "form", "jupyter": {"source_hidden": True}}
+CELL_ID = "_cell_id"  # a cell added after release keeps every earlier cell's id: it carries its own id, not an index
 
 
 def cells() -> list[tuple[str, str, dict]]:
     install = (CELL_INSTALL.replace("@@UV_URL@@", UV_WHEEL["url"]).replace("@@UV_BYTES@@", str(UV_WHEEL["bytes"]))
                .replace("@@UV_SHA256@@", UV_WHEEL["sha256"]).replace("@@PYTHON@@", MANAGED_PYTHON))
     return [
-        ("markdown", TITLE, {}), ("markdown", GLOSSARY, {}), ("markdown", SEC1, {}),
+        ("markdown", TITLE, {}), ("markdown", PROBLEM, {CELL_ID: "rice-problem"}), ("markdown", GLOSSARY, {}),
+        ("markdown", SEC1, {}),
         ("code", CELL_RUNTIME, INFRA),
         ("code", carrier_cell(carried_files()), {**INFRA, "dimer": {"embedded_sources": True}}),
         ("markdown", INSTALL_MD, {}), ("code", install, INFRA),
@@ -683,9 +726,13 @@ def cells() -> list[tuple[str, str, dict]]:
 def build() -> str:
     files = carried_files()
     nb_cells = []
-    for index, (kind, source, metadata) in enumerate(cells()):
-        cell = {"cell_type": kind, "id": f"rice-{index:02d}", "metadata": metadata,
-                "source": source.splitlines(keepends=True)}
+    index = 0
+    for kind, source, metadata in cells():
+        metadata = dict(metadata)
+        cell_id = metadata.pop(CELL_ID, None)
+        if cell_id is None:
+            cell_id, index = f"rice-{index:02d}", index + 1
+        cell = {"cell_type": kind, "id": cell_id, "metadata": metadata, "source": source.splitlines(keepends=True)}
         if kind == "code":
             cell.update(execution_count=None, outputs=[])
         nb_cells.append(cell)
@@ -696,7 +743,8 @@ def build() -> str:
             "language_info": {"name": "python"}, "accelerator": "GPU",
             "colab": {"name": NOTEBOOK.name, "gpuType": "T4", "provenance": []},
             "dimer": {
-                "notebook_spec": "2.3", "notebook_profile": "E2E", "notebook_mode": "WORKSHOP", "standalone": True,
+                "notebook_spec": "2.4", "notebook_profile": "E2E", "notebook_mode": "WORKSHOP", "notebook_kind": "CAPSTONE",
+                "standalone": True,
                 "requires_dimer_worker": False, "release_status": "Candidate",
                 "reference_exemplar": "DIMER_Philippines_Flood_Mapping_Capstone (NOTEBOOK_SPEC 25.15)",
                 "owner_decisions": {"D1": "E2E with BYOD of HDF5 chips in the dataset schema",
