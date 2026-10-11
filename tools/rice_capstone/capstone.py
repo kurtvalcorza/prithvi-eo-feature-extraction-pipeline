@@ -580,13 +580,15 @@ def head_forward_numpy(params: Mapping[str, np.ndarray], features: np.ndarray) -
     return logits[:, 1] - logits[:, 0]
 
 
-def write_geotiff(path: Path, array: np.ndarray, *, x_min: float | None, y_max: float | None, nodata: int = IGNORE) -> None:
-    """uint8 single-band GeoTIFF (EPSG:32651, 20 m, upper-left x_min/y_max) via tifffile GeoTIFF tags; without
-    coordinates a plain TIFF is written and the manifest says so."""
+def write_geotiff(path: Path, array: np.ndarray, *, x_min: float | None, y_max: float | None,
+                  nodata: int | None = IGNORE, dtype: Any = np.uint8) -> None:
+    """Single-band GeoTIFF (EPSG:32651, 20 m, upper-left x_min/y_max) via tifffile GeoTIFF tags; without
+    coordinates a plain TIFF is written and the manifest says so. uint8 decisions by default; float32 for scores,
+    which have no nodata value (nodata=None)."""
     import tifffile
 
-    array = np.ascontiguousarray(array, dtype=np.uint8)
-    extratags = [(42113, "s", 0, str(nodata), True)]  # GDAL_NODATA
+    array = np.ascontiguousarray(array, dtype=dtype)
+    extratags = [] if nodata is None else [(42113, "s", 0, str(nodata), True)]  # GDAL_NODATA
     if x_min is not None and y_max is not None:
         extratags += [
             (33550, "d", 3, (PIXEL_METRES, PIXEL_METRES, 0.0), True),  # ModelPixelScale
@@ -1482,10 +1484,15 @@ def stage_export(ctx: Context) -> None:
     t = selection["C"]["threshold"]
     for cid, p in probs.items():
         label = ctx.chip(cid)["label"]
-        pred = np.where(label == IGNORE, IGNORE, (p >= t).astype(np.uint8)).astype(np.uint8)
+        decision = (p >= t).astype(np.uint8)
         info = records["chips"][cid]
-        write_geotiff(ctx.out / "predictions" / f"{cid}_C.tif", pred, x_min=info["x_min"], y_max=info["y_max"])
-    ctx.receipt("export", geotiffs=len(probs))
+        where = {"x_min": info["x_min"], "y_max": info["y_max"]}
+        # Scored map: pixels the reference ignores are 255, so it reproduces the evaluation exactly.
+        write_geotiff(ctx.out / "predictions" / f"{cid}_C.tif", np.where(label == IGNORE, IGNORE, decision), **where)
+        # Usable maps: a decision for every pixel, and the rice scores themselves, so a user can choose a threshold.
+        write_geotiff(ctx.out / "predictions" / f"{cid}_C_all_pixels.tif", decision, **where)
+        write_geotiff(ctx.out / "predictions" / f"{cid}_C_score.tif", p, nodata=None, dtype=np.float32, **where)
+    ctx.receipt("export", geotiffs=3 * len(probs))
 
 
 def stage_reload(ctx: Context) -> None:
@@ -1501,7 +1508,7 @@ def stage_reload(ctx: Context) -> None:
     records = ctx.records()
     saved = dict(np.load(ctx.work / "validation_probs_c.npz"))
     t = float(manifest["threshold"])
-    worst, identical, geotiff_ok = 0.0, True, True
+    worst, identical, geotiff_ok, extra_ok = 0.0, True, True, True
     labels, from_tiff = [], []
     for cid in records["roles"]["validation"]:
         chip = ctx.chip(cid)
@@ -1512,6 +1519,11 @@ def stage_reload(ctx: Context) -> None:
         array, geo = read_geotiff(ctx.out / "predictions" / f"{cid}_C.tif")
         expected = np.where(chip["label"] == IGNORE, IGNORE, (saved[cid] >= t).astype(np.uint8))
         geotiff_ok &= bool(np.array_equal(array, expected)) and geo.get("epsg") == EPSG
+        everywhere, geo_all = read_geotiff(ctx.out / "predictions" / f"{cid}_C_all_pixels.tif")
+        score, geo_score = read_geotiff(ctx.out / "predictions" / f"{cid}_C_score.tif")
+        extra_ok &= (bool(np.array_equal(everywhere, (saved[cid] >= t).astype(np.uint8)))
+                     and bool(np.array_equal(score, saved[cid].astype(np.float32)))
+                     and geo_all.get("epsg") == EPSG and geo_score.get("epsg") == EPSG)
         labels.append(chip["label"])
         from_tiff.append(np.where(array == IGNORE, 0, array).astype(np.float64))
     recomputed = pooled(from_tiff, labels, 0.5)
@@ -1522,10 +1534,11 @@ def stage_reload(ctx: Context) -> None:
         "max_abs_score_difference": worst, "tolerance": RELOAD_TOLERANCE,
         "binary_decisions_identical": identical, "geotiffs_match_and_georeferenced": geotiff_ok,
         "metrics_recomputed_from_geotiffs": metrics_ok,
+        "score_and_all_pixel_geotiffs_match": extra_ok,
         "meaning": "the saved computation is reproducible from files in a fresh process; not evidence of accuracy",
     }
     write_json(ctx.out / "verification.json", result)
-    if not (worst <= RELOAD_TOLERANCE and identical and geotiff_ok and metrics_ok):
+    if not (worst <= RELOAD_TOLERANCE and identical and geotiff_ok and metrics_ok and extra_ok):
         raise RuntimeError(f"reload parity failed: {result}")
     ctx.receipt("reload")
 
@@ -1537,13 +1550,8 @@ def stage_report(ctx: Context) -> None:
     source = read_json(ctx.root / "source.json") if (ctx.root / "source.json").exists() else {}
     (ctx.out / "ATTRIBUTION.txt").write_text(ATTRIBUTION, encoding="utf-8")
 
-    def fmt(value):
-        return "undefined" if value is None else f"{value:.3f}"
-
-    lines = ["# Conclusion scaffold", "", "Validation metrics (8 chips, PH-07/PH-08, pooled over labelled pixels):", ""]
-    lines += [f"- {r['system']}: F1 {fmt(r['f1'])}, IoU {fmt(r['iou'])}, precision {fmt(r['precision'])}, "
-              f"recall {fmt(r['recall'])}" for r in metrics]
-    lines += ["", "Complete in your own words:", "",
+    lines = answer_lines(metrics)
+    lines += ["", "# Conclusion scaffold", "", "Complete in your own words:", "",
               "> On the labelled pixels of eight validation chips from two regions, [system] reached a pooled rice F1 of "
               "[value] against [baselines]. On the development chips, [T=1 vs T=4 result]. The error maps show "
               "[pattern], and the 320 m patch grid [effect]. Labels are published map products, the sample is small "
@@ -1566,6 +1574,34 @@ def stage_report(ctx: Context) -> None:
     final = bundle_results(ctx)
     if final["members"] != check["members"]:
         raise RuntimeError(f"results.zip membership changed while finalising: {check} != {final}")
+
+
+def _fmt(value: Any) -> str:
+    return "undefined" if value is None else f"{value:.3f}"
+
+
+def answer_lines(metrics: Sequence[Mapping[str, Any]]) -> list[str]:
+    """This run's own answer to the driving question, written from the validation table it just produced (KND4):
+    the pooled metrics, whether C scored above B, and the evidence level that limits the claim."""
+    rows = {r["system"].split(" ", 1)[0]: r for r in metrics}
+    b, c = rows["B"], rows["C"]
+    lines = ["# This run's answer", "", "Validation metrics (8 chips, PH-07/PH-08, pooled over labelled pixels):", ""]
+    lines += [f"- {r['system']}: F1 {_fmt(r['f1'])}, IoU {_fmt(r['iou'])}, precision {_fmt(r['precision'])}, "
+              f"recall {_fmt(r['recall'])}" for r in metrics]
+    better = c["f1"] is not None and (b["f1"] is None or c["f1"] > b["f1"])
+    verdict = (f"the head on frozen Prithvi-EO-2.0 features (C, F1 {_fmt(c['f1'])}) "
+               f"{'mapped rice better than' if better else 'did not map rice better than'} "
+               f"the spectral-temporal LightGBM baseline (B, F1 {_fmt(b['f1'])})")
+    lines += ["", "**Answer to the driving question, from this run:** on the labelled pixels of these 8 validation "
+                  f"chips, {verdict}; calling everything non-rice (A) scored F1 {_fmt(rows['A']['f1'])}."]
+    if "C-FT" in rows:
+        lines += ["", f"The opt-in fine-tuned encoder (C-FT) scored F1 {_fmt(rows['C-FT']['f1'])}; it was selected on "
+                      "development chips before validation was scored."]
+    lines += ["", "**Evidence level:** tutorial evidence from one run at teaching scale: 8 validation chips from two "
+                  "neighbouring regions, scored once after every choice was frozen on development chips; map-derived "
+                  "labels; no confidence intervals. It does not establish which approach is better nationally or "
+                  "operationally."]
+    return lines
 
 
 def bundle_results(ctx: Context) -> dict[str, Any]:

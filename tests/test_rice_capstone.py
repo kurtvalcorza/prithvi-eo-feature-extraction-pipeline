@@ -638,6 +638,41 @@ def test_geotiff_round_trip_keeps_values_georeference_and_nodata(tmp_path):
     assert geo == {"nodata": 255, "x_min": 250880.0, "y_max": 1896960.0, "pixel": 20.0, "epsg": 32651}
     cap.write_geotiff(tmp_path / "plain.tif", pred, x_min=None, y_max=None)
     assert cap.read_geotiff(tmp_path / "plain.tif")[1] == {"nodata": 255}
+    # RICE-m5: the exported rice scores are float32 GeoTIFFs with no nodata value, so they keep every pixel exactly.
+    score = np.random.default_rng(1).uniform(size=(128, 128))
+    cap.write_geotiff(tmp_path / "s.tif", score, x_min=250880.0, y_max=1896960.0, nodata=None, dtype=np.float32)
+    array, geo = cap.read_geotiff(tmp_path / "s.tif")
+    assert array.dtype == np.float32
+    np.testing.assert_array_equal(array, score.astype(np.float32))
+    assert geo == {"nodata": None, "x_min": 250880.0, "y_max": 1896960.0, "pixel": 20.0, "epsg": 32651}
+
+
+def test_review_rice_m5_export_writes_scored_all_pixel_and_score_maps():
+    # RICE-m5 (review 2026-10-11): results.zip bundles outputs/ only, so the scores and an unmasked decision map must be
+    # written there beside the label-masked map that reproduces the evaluation; the reload checks all three.
+    source = (TOOLS / "capstone.py").read_text(encoding="utf-8")
+    export = source[source.index("def stage_export"):source.index("def stage_reload")]
+    reload = source[source.index("def stage_reload"):source.index("def stage_report")]
+    for name in ("_C.tif", "_C_all_pixels.tif", "_C_score.tif"):
+        assert f'ctx.out / "predictions" / f"{{cid}}{name}"' in export, name
+        assert name in reload, name
+    assert "score_and_all_pixel_geotiffs_match" in reload and "and extra_ok" in reload
+
+
+def test_review_knd4_the_run_states_its_own_answer_with_its_evidence_level():
+    def row(system, f1):
+        return {"system": system, "f1": f1, "iou": None if f1 is None else f1 / 2, "precision": None, "recall": 0.5}
+
+    lines = "\n".join(cap.answer_lines([row("A all-non-rice", 0.0), row("B LightGBM", 0.758),
+                                         row("C frozen Prithvi + head", 0.601)]))
+    assert "did not map rice better than the spectral-temporal LightGBM baseline (B, F1 0.758)" in lines
+    assert "(C, F1 0.601)" in lines and "(A) scored F1 0.000" in lines and "C-FT" not in lines
+    assert "**Evidence level:**" in lines and "nationally" in lines and "precision undefined" in lines
+    lines = "\n".join(cap.answer_lines([row("A all-non-rice", 0.0), row("B LightGBM", 0.5),
+                                         row("C frozen Prithvi + head", 0.7), row("C-FT fine-tuned (opt-in)", 0.6)]))
+    assert "(C, F1 0.700) mapped rice better than" in lines and "(C-FT) scored F1 0.600" in lines
+    assert "did not" not in cap.answer_lines([row("A all-non-rice", 0.0), row("B LightGBM", None),
+                                             row("C frozen Prithvi + head", 0.1)])[-3]
 
 
 def test_csv_and_zip_round_trips_with_tamper_detection(tmp_path):
@@ -765,14 +800,39 @@ def test_learner_text_attribution_disclosure_and_citations():
                       "geoBoundaries PHL ADM1", "Dataset compilation"):
         assert component in markdown, component
     assert "0.760" in markdown and "0.928" in markdown
-    references = markdown.split("## References", 1)[1]
+    references = markdown.split("## References", 1)[1].split("**Data and software sources:**", 1)[0]
     body = markdown.split("## References", 1)[0]
-    cited = set(re.findall(r"\(([A-Z][A-Za-zÀ-ÿ\-]+)(?: et al\.| & [A-Z][A-Za-z]+)?, (\d{4})\)", body))
-    cited |= set(re.findall(r"([A-Z][A-Za-zÀ-ÿ\-]+) et al\. \((\d{4})\)", body))
-    assert cited, "expected in-text citations"
-    for author, year in cited:
-        assert re.search(rf"^{author},.*\({year}\)", references, flags=re.M), (author, year)
-    for entry in [e for e in references.split("\n\n") if re.match(r"^[A-Z][^*]+\(\d{4}\)", e)]:
-        assert "https://doi.org/" in entry, entry[:60]
-        surname = entry.split(",", 1)[0]
-        assert surname in markdown.split("## References", 1)[0], surname
+    # NOTEBOOK_SPEC 2.4 DOC14-DOC16: IEEE numbered citations, one to one with entries, each entry with a resolvable link.
+    assert not re.search(r"\([A-Z][\w\s.&-]*et al\., \d{4}\)|\([A-Z][a-z]+ & [A-Z][a-z]+, \d{4}\)", markdown)
+    cited = {int(n) for n in re.findall(r"\[(\d+)\]", body)}
+    entries = dict(re.findall(r"^\[(\d+)\] (.+)$", references, flags=re.M))
+    assert cited and cited == {int(n) for n in entries}, (sorted(cited), sorted(entries))
+    for number, entry in entries.items():
+        assert "Available: https://" in entry, number
+        if "doi:" in entry:
+            assert "https://doi.org/" in entry, number
+
+
+def test_review_findings_2026_10_11_learner_text():
+    # The rice capstone review of a00ab42 (RICE-m1..m4, m7, S2) and NOTEBOOK_SPEC 2.4.
+    notebook = _notebook()
+    cells = [(c["cell_type"], _source(c)) for c in notebook["cells"]]
+    first_code = next(i for i, (kind, _) in enumerate(cells) if kind == "code")
+    opening = "\n".join(text for _, text in cells[:first_code])
+    dimer = notebook["metadata"]["dimer"]
+    assert (dimer["notebook_spec"], dimer["notebook_kind"]) == ("2.4", "CAPSTONE")  # m7 / KND1
+    assert "> **⚠️ Notice.** For research, training and evaluation only." in opening  # m7 / DOC17-DOC21
+    assert "Data you bring stays in your runtime" in opening and '"as is", without warranty' in opening
+    assert "### Problem statement" in opening and "### Data context" in opening  # DOC1-DOC8 / KND4
+    assert re.search(r"about 10 minutes.*Tesla T4.*`33037307`", opening)  # m3 / KND9, UX12
+    assert not re.search(r"(?m)^\s*[23]\.\s+\*\*(Build|Train)\*\*", opening)  # m4
+    for _kind, text in cells:  # m2: every cell that names lesson L3/L3B links it
+        if re.search(r"\bL3B?\b", text):
+            assert "kaggle.com/code/kurtvalcorza/rice-from-space-lesson-3" in text, text[:80]
+    for _kind, text in cells:  # m1: quoted outside numbers name their source revision in the same cell
+        if re.search(r"(?i)not re-run here", text):
+            assert re.search(r"`[0-9a-f]{8}`|`[0-9a-f]{8}…`", text), text[:80]
+    byod = next(text for kind, text in cells if kind == "markdown" and "USE_BYOD" in text)
+    assert "Run this cell" in byod and "do not need to Run all again" in byod  # S2
+    ids = [c["id"] for c in notebook["cells"]]
+    assert ids[:3] == ["rice-00", "rice-problem", "rice-01"] and ids[-1] == "rice-35"  # earlier cell ids are kept

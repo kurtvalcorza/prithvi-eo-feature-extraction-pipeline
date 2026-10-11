@@ -1,0 +1,454 @@
+[colab] Parsing notebook '/home/kurt/colab-runs/prithvi-eo-feature-extraction-pipeline-6130de4-8c3a36/DIMER_Philippines_Rice_Mapping_Capstone_6130de4_colab-cli-t4.ipynb'...
+[colab] Executing cell 1/13 - Infrastructure: check the runtime, GPU and disk; create a fresh run directory...
+GPU: Tesla T4, 15360 MiB
+Run directory: /content/outputs/philippines_rice/3e1bc113bd4f
+[colab] Executing cell 2/13 - Infrastructure: write and verify the embedded source, lock and manifests...
+6 carried files written and verified under /content/outputs/philippines_rice/3e1bc113bd4f
+[colab] Executing cell 3/13 - Infrastructure: install the locked runtime and define the stage runner...
+Bootstrap took 70 s
+[colab] Executing cell 4/13 - rice-08...
+Running prepare - one process per stage; log: /content/outputs/philippines_rice/3e1bc113bd4f/prepare.log
+Using Colab cache for faster access to the 'rice-philippines-s2-alphaearth-v1-teaching' dataset.
+dataset resolved anonymously by kagglehub in 1.4 s: /kaggle/input/rice-philippines-s2-alphaearth-v1-teaching
+{"stage": "prepare", "seconds": 12.76, "chips": 40, "layout": "expanded", "peak_gpu_gib": 0.0}
+Layout: expanded | chips: 40 | roles: {'development': 8, 'fit': 24, 'validation': 8}
+Development regions: ['PH-01', 'PH-02', 'PH-15', 'PH-40'] | fit regions: ['PH-05', 'PH-09', 'PH-12', 'PH-13', 'PH-14', 'PH-41']
+
+                                                                                
+                                    Non-ri…  Ignored  Frames   Min              
+ Chip     Role     Region  Rice px  px       px       (bins)   valid     Filled 
+ ────────────────────────────────────────────────────────────────────────────── 
+ ph_102…  fit      PH-41   0        16384    0        4 8 12   0.6740    0.0959 
+                                                      22                        
+ ph_122…  fit      PH-41   10942    2711     2731     5 6 14   0.9582    0.0176 
+                                                      18                        
+ ph_127…  develo…  PH-40   677      14628    1079     5 11 16  0.9631    0.0202 
+                                                      22                        
+ ph_128…  develo…  PH-15   981      13133    2270     5 8 16   0.9974    0.0007 
+                                                      20                        
+ ph_133…  develo…  PH-02   2303     10338    3743     5 8 16   0.8787    0.0325 
+                                                      18                        
+ ph_157…  develo…  PH-02   0        16384    0        4 9 12   0.8925    0.0562 
+                                                      21                        
+ ph_172…  develo…  PH-40   0        16384    0        3 7 16   0.9954    0.0024 
+                                                      23                        
+ ph_183…  fit      PH-05   0        16384    0        4 8 15   0.9987    0.0005 
+                                                      20                        
+ ph_197…  fit      PH-09   0        16384    0        5 8 14   0.8745    0.0729 
+                                                      22                        
+ ph_204…  fit      PH-05   5035     6533     4816     4 9 15   0.8182    0.1201 
+                                                      23                        
+ ph_211…  fit      PH-09   2535     12575    1274     2 6 16   0.8672    0.0387 
+                                                      22                        
+ ph_211…  fit      PH-05   4885     7709     3790     3 8 17   0.9711    0.0086 
+                                                      18                        
+ ph_212…  fit      PH-09   14419    290      1675     0 11 14  0.9286    0.0319 
+                                                      23                        
+ ph_214…  fit      PH-05   0        16384    0        2 10 17  0.9879    0.0058 
+                                                      18                        
+ ph_217…  fit      PH-05   2966     11334    2084     2 8 17   0.9028    0.0339 
+                                                      19                        
+ ph_240…  valida…  PH-07   2112     10630    3642     4 7 14   0.8141    0.0554 
+                                                      23                        
+ ph_242…  fit      PH-14   0        16384    0        3 10 14  0.9999    0.0000 
+                                                      23                        
+ ph_242…  valida…  PH-07   0        16384    0        4 7 14   0.9938    0.0016 
+                                                      21                        
+ ph_243…  valida…  PH-07   1061     13522    1801     5 6 17   0.9046    0.0484 
+                                                      19                        
+ ph_245…  fit      PH-14   2005     12144    2235     3 6 14   0.8193    0.0620 
+                                                      23                        
+ ph_245…  valida…  PH-07   677      13877    1830     5 7 14   0.9660    0.0121 
+                                                      19                        
+ ph_251…  valida…  PH-07   1980     10258    4146     5 7 14   0.9844    0.0045 
+                                                      20                        
+ ph_251…  fit      PH-05   0        16384    0        3 10 13  0.9153    0.0222 
+                                                      18                        
+ ph_257…  fit      PH-14   270      14723    1391     3 6 16   0.9908    0.0025 
+                                                      23                        
+ ph_259…  fit      PH-14   5648     6354     4382     4 6 14   0.9575    0.0135 
+                                                      21                        
+ ph_265…  fit      PH-12   1757     12149    2478     4 6 14   0.9819    0.0082 
+                                                      18                        
+ ph_273…  valida…  PH-08   3121     10241    3022     4 6 14   0.8676    0.0341 
+                                                      20                        
+ ph_278…  valida…  PH-08   3938     9636     2810     3 8 16   0.4654    0.1815 
+                                                      22                        
+ ph_279…  fit      PH-12   0        16384    0        3 6 12   0.7015    0.0925 
+                                                      22                        
+ ph_283…  fit      PH-12   1220     13293    1871     3 6 14   0.8973    0.0380 
+                                                      19                        
+ ph_293…  valida…  PH-08   0        16384    0        1 6 12   0.9522    0.0144 
+                                                      19                        
+ ph_300…  fit      PH-13   0        16384    0        4 9 13   0.9135    0.0293 
+                                                      21                        
+ ph_314…  fit      PH-13   0        16384    0        3 6 16   0.8812    0.0386 
+                                                      18                        
+ ph_320…  fit      PH-13   3286     11014    2084     4 10 14  0.9315    0.0261 
+                                                      18                        
+ ph_327…  fit      PH-13   0        16384    0        5 11 12  0.8348    0.1077 
+                                                      18                        
+ ph_330…  fit      PH-13   1470     13563    1351     4 11 17  0.9411    0.0319 
+                                                      20                        
+ ph_338…  fit      PH-13   0        16384    0        3 9 13   0.9999    0.0000 
+                                                      20                        
+ ph_92_…  develo…  PH-01   938      14652    794      0 8 17   0.9999    0.0000 
+                                                      19                        
+ ph_93_…  develo…  PH-01   3769     10410    2205     4 7 17   0.9461    0.0141 
+                                                      18                        
+ ph_98_…  develo…  PH-01   881      14407    1096     0 6 17   0.9978    0.0011 
+                                                      19                        
+                                                                                
+
+                                                                                
+ Refusal probe          Refused  Message                                        
+ ────────────────────────────────────────────────────────────────────────────── 
+ 12 bins instead of 24  yes      probe: S2 has shape (12, 6, 128, 128);         
+                                 expected (24, 6, 128, 128) (bins, bands, rows, 
+                                 cols)                                          
+ label value 2          yes      probe: label values [2] are outside 0          
+                                 (non-rice), 1 (rice), 255 (ignore)             
+ reflectance x 10 000   yes      probe: S2 maximum 12841.0 exceeds 2.0; the     
+                                 file looks like reflectance x 10 000 -         
+                                 multiply by 0.0001 before uploading            
+                                                                                
+overview_composites.png                                                         
+<IPython.core.display.Image object>
+
+[Image saved to: /tmp/tmp7019pyni.png]
+overview_ndvi_series.png                                                        
+<IPython.core.display.Image object>
+
+[Image saved to: /tmp/tmpd_xj4c_3.png]
+overview_valid_by_bin.png                                                       
+<IPython.core.display.Image object>
+
+[Image saved to: /tmp/tmp8ts0_sbg.png]
+[colab] Executing cell 5/13 - rice-11...
+Running baseline - one process per stage; log: /content/outputs/philippines_rice/3e1bc113bd4f/baseline.log
+{"stage": "baseline", "seconds": 230.25, "best_iteration": 187, "peak_gpu_gib": 0.0}
+B: M1 spectral-temporal LightGBM | threshold 0.5 | development F1 0.8132
+
+                                                       
+ Threshold  Dev F1  Dev IoU  Dev precision  Dev recall 
+ ───────────────────────────────────────────────────── 
+ 0.1000     0.6813  0.5166   0.5222         0.9800     
+ 0.1500     0.7390  0.5860   0.5995         0.9630     
+ 0.2000     0.7728  0.6297   0.6536         0.9451     
+ 0.2500     0.7908  0.6540   0.6902         0.9258     
+ 0.3000     0.8021  0.6695   0.7190         0.9068     
+ 0.3500     0.8096  0.6801   0.7432         0.8891     
+ 0.4000     0.8125  0.6842   0.7636         0.8680     
+ 0.4500     0.8130  0.6850   0.7805         0.8484     
+ 0.5000     0.8132  0.6853   0.7987         0.8284     
+ 0.5500     0.8107  0.6816   0.8147         0.8067     
+ 0.6000     0.8063  0.6755   0.8280         0.7857     
+ 0.6500     0.8014  0.6686   0.8442         0.7627     
+ 0.7000     0.7925  0.6562   0.8576         0.7365     
+ 0.7500     0.7814  0.6412   0.8724         0.7075     
+ 0.8000     0.7632  0.6171   0.8871         0.6697     
+ 0.8500     0.7361  0.5824   0.9005         0.6225     
+ 0.9000     0.6883  0.5247   0.9179         0.5505     
+                                                       
+
+                                                                                
+ system      threshold  f1      iou     precision  recall  accuracy  scored_pi… 
+ ────────────────────────────────────────────────────────────────────────────── 
+ A           undefined  0.0000  0.0000  undefined  0.0000  0.9203    119885     
+ all-non-r…                                                                     
+ B LightGBM  0.5000     0.8132  0.6853  0.7987     0.8284  0.9697    119885     
+                                                                                
+undefined -> A all-non-rice: precision: no pixel predicted rice
+[colab] Executing cell 6/13 - rice-14...
+Running features - one process per stage; log: /content/outputs/philippines_rice/3e1bc113bd4f/features.log
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+/content/outputs/philippines_rice/3e1bc113bd4f/env/lib/python3.12/site-packages/torch/jit/_script.py:1491: FutureWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+{"stage": "features", "seconds": 89.91, "peak_gpu_gib": 1.306}
+
+                                                                                
+ Record                    Value                                                
+ ────────────────────────────────────────────────────────────────────────────── 
+ converted_sha256          15b8ed6dacf8b3ca02c542bb8eaffc92c7a7addc5351b3d9678… 
+ device                    cuda                                                 
+ feature_layer_zero_based  11                                                   
+ model_id                  ibm-nasa-geospatial/Prithvi-EO-2.0-300M              
+ parameters                330419712                                            
+ pickle_audit_sha256       e7b998d087a5dcadd37713daf30b63cc571160c3180ebc13850… 
+ revision                  9eb1b1102806593963daa333bcc491b1c6f8562f             
+ source                    converted from the manifest-verified source          
+                           checkpoint                                           
+ source_checkpoint_sha256  faab2c8b776f0723f93431747603a7ec586a54fc45473613b43… 
+ strict_load               true                                                 
+                                                                                
+
+                                                                                
+ Record                Value                                                    
+ ────────────────────────────────────────────────────────────────────────────── 
+ chips_t1_per_quarter  32                                                       
+ chips_t4              40                                                       
+ feature               block 12 (zero-based 11) patch tokens, temporal mean,    
+                       grid 8 x 8 x 1024 per 128 px chip                        
+ gpu                   Tesla T4                                                 
+ peak_gpu_gib          1.3060                                                   
+ precision             float32, inference mode, deterministic cuDNN             
+ seconds               11.6900                                                  
+ torch                 2.14.0+cu130                                             
+                                                                                
+[colab] Executing cell 7/13 - rice-17...
+Running train-head - one process per stage; log: /content/outputs/philippines_rice/3e1bc113bd4f/train-head.log
+/content/outputs/philippines_rice/3e1bc113bd4f/capstone.py:1140: UserWarning: Converting a tensor with requires_grad=True to a scalar may lead to unexpected behavior.
+Consider using tensor.detach() first. (Triggered internally at /__w/pytorch/pytorch/torch/csrc/autograd/generated/python_variable_methods.cpp:820.)
+  losses.append(float(loss))
+epoch  1  fit loss 0.5022  dev loss 0.1974  dev F1@0.5 0.0
+epoch  2  fit loss 0.3744  dev loss 0.2619  dev F1@0.5 0.6703456536618754
+epoch  3  fit loss 0.2314  dev loss 0.2073  dev F1@0.5 0.6577116038193882
+epoch  4  fit loss 0.1689  dev loss 0.1481  dev F1@0.5 0.7035124447545941
+epoch  5  fit loss 0.1479  dev loss 0.1348  dev F1@0.5 0.709873417721519
+epoch  6  fit loss 0.1312  dev loss 0.1593  dev F1@0.5 0.6742871189773845
+epoch  7  fit loss 0.1183  dev loss 0.1478  dev F1@0.5 0.6885371132708059
+epoch  8  fit loss 0.1112  dev loss 0.1199  dev F1@0.5 0.7270335040646586
+epoch  9  fit loss 0.1048  dev loss 0.1191  dev F1@0.5 0.7291883208919966
+epoch 10  fit loss 0.1012  dev loss 0.1267  dev F1@0.5 0.7142987832769189
+epoch 11  fit loss 0.0970  dev loss 0.1280  dev F1@0.5 0.7116340584667306
+epoch 12  fit loss 0.0953  dev loss 0.1277  dev F1@0.5 0.7131541596080766
+epoch 13  fit loss 0.0918  dev loss 0.1284  dev F1@0.5 0.714731814842028
+epoch 14  fit loss 0.0899  dev loss 0.1288  dev F1@0.5 0.7124656278643446
+epoch 15  fit loss 0.0885  dev loss 0.1363  dev F1@0.5 0.701193444959031
+epoch 16  fit loss 0.0880  dev loss 0.1341  dev F1@0.5 0.7040409023635467
+epoch 17  fit loss 0.0859  dev loss 0.1308  dev F1@0.5 0.7092875318066157
+epoch 18  fit loss 0.0838  dev loss 0.1292  dev F1@0.5 0.7128024516306088
+epoch 19  fit loss 0.0826  dev loss 0.1297  dev F1@0.5 0.7120208342851921
+epoch 20  fit loss 0.0812  dev loss 0.1296  dev F1@0.5 0.7128884826325411
+epoch 21  fit loss 0.0807  dev loss 0.1277  dev F1@0.5 0.7156781609195403
+epoch 22  fit loss 0.0813  dev loss 0.1230  dev F1@0.5 0.7219106375023369
+epoch 23  fit loss 0.0788  dev loss 0.1271  dev F1@0.5 0.7157006603081438
+epoch 24  fit loss 0.0787  dev loss 0.1229  dev F1@0.5 0.7214824471552286
+epoch 25  fit loss 0.0779  dev loss 0.1270  dev F1@0.5 0.715415923537751
+epoch 26  fit loss 0.0757  dev loss 0.1230  dev F1@0.5 0.7198700092850511
+epoch 27  fit loss 0.0754  dev loss 0.1233  dev F1@0.5 0.7195031516499815
+epoch 28  fit loss 0.0740  dev loss 0.1246  dev F1@0.5 0.7188451249884698
+epoch 29  fit loss 0.0739  dev loss 0.1218  dev F1@0.5 0.7220922616262749
+epoch 30  fit loss 0.0730  dev loss 0.1228  dev F1@0.5 0.7209248123805528
+{"stage": "train-head", "seconds": 10.45, "selected_epoch": 9, "peak_gpu_gib": 0.0}
+head_training_curves.png                                                        
+<IPython.core.display.Image object>
+
+[Image saved to: /tmp/tmpzavsc7up.png]
+B: M1 spectral-temporal LightGBM | threshold 0.5 | development F1 0.8132
+C: frozen Prithvi-EO-2.0 block 12 + 1x1-conv head | threshold 0.7 | development F1 0.7665 | epoch 9
+
+                                                       
+ Threshold  Dev F1  Dev IoU  Dev precision  Dev recall 
+ ───────────────────────────────────────────────────── 
+ 0.1000     0.5724  0.4010   0.4162         0.9164     
+ 0.1500     0.6097  0.4385   0.4616         0.8976     
+ 0.2000     0.6391  0.4696   0.5011         0.8818     
+ 0.2500     0.6609  0.4936   0.5340         0.8670     
+ 0.3000     0.6763  0.5109   0.5605         0.8522     
+ 0.3500     0.6891  0.5257   0.5862         0.8359     
+ 0.4000     0.7030  0.5421   0.6120         0.8260     
+ 0.4500     0.7165  0.5582   0.6379         0.8172     
+ 0.5000     0.7292  0.5738   0.6643         0.8081     
+ 0.5500     0.7426  0.5905   0.6944         0.7979     
+ 0.6000     0.7524  0.6031   0.7232         0.7842     
+ 0.6500     0.7638  0.6179   0.7580         0.7697     
+ 0.7000     0.7665  0.6214   0.7861         0.7478     
+ 0.7500     0.7624  0.6161   0.8105         0.7198     
+ 0.8000     0.7519  0.6025   0.8364         0.6830     
+ 0.8500     0.7208  0.5635   0.8613         0.6198     
+ 0.9000     0.6451  0.4761   0.8794         0.5094     
+                                                       
+
+                                                                                
+ system                  threshold  f1      iou     precision  recall  accuracy 
+ ────────────────────────────────────────────────────────────────────────────── 
+ A all-non-rice          undefined  0.0000  0.0000  undefined  0.0000  0.9203   
+ B LightGBM              0.5000     0.8132  0.6853  0.7987     0.8284  0.9697   
+ C frozen Prithvi +      0.7000     0.7665  0.6214  0.7861     0.7478  0.9637   
+ head                                                                           
+                                                                                
+undefined -> A all-non-rice: precision: no pixel predicted rice
+[colab] Executing cell 8/13 - rice-20...
+Running activity - one process per stage; log: /content/outputs/philippines_rice/3e1bc113bd4f/activity.log
+/content/outputs/philippines_rice/3e1bc113bd4f/capstone.py:1140: UserWarning: Converting a tensor with requires_grad=True to a scalar may lead to unexpected behavior.
+Consider using tensor.detach() first. (Triggered internally at /__w/pytorch/pytorch/torch/csrc/autograd/generated/python_variable_methods.cpp:820.)
+  losses.append(float(loss))
+{"stage": "activity", "seconds": 10.4, "peak_gpu_gib": 0.0}
+
+                                                                                
+ variant                   epochs  threshold  f1      iou     precision  recall 
+ ────────────────────────────────────────────────────────────────────────────── 
+ T=4 (one frame per        9       0.7000     0.7665  0.6214  0.7861     0.7478 
+ quarter)                                                                       
+ T=1 (quarter 1 only)      9       0.7000     0.4849  0.3201  0.5851     0.4141 
+ T=1 (quarter 2 only)      9       0.7000     0.6789  0.5139  0.7026     0.6568 
+ T=1 (quarter 3 only)      9       0.7000     0.6201  0.4493  0.7636     0.5219 
+ T=1 (quarter 4 only)      9       0.7000     0.6722  0.5063  0.7076     0.6402 
+                                                                                
+activity_frames.png                                                             
+<IPython.core.display.Image object>
+
+[Image saved to: /tmp/tmp2phyrm52.png]
+[colab] Executing cell 9/13 - rice-23...
+C-FT not run (RUN_FINETUNE = False); the canonical comparison is A, B and C.
+[colab] Executing cell 10/13 - rice-25...
+Running evaluate - one process per stage; log: /content/outputs/philippines_rice/3e1bc113bd4f/evaluate.log
+{"stage": "evaluate", "seconds": 62.75, "systems": ["A all-non-rice", "B LightGBM", "C frozen Prithvi + head"], "peak_gpu_gib": 0.0}
+
+                                                                                
+ syst…  thres…  f1     iou     prec…  recall  accu…  tp     fp    fn     tn     
+ ────────────────────────────────────────────────────────────────────────────── 
+ A      undef…  0.00…  0.0000  unde…  0.0000  0.88…  0      0     12889  100932 
+ all-…                                                                          
+ B      0.5000  0.75…  0.6102  0.67…  0.8571  0.93…  11047  5215  1842   95717  
+ Ligh…                                                                          
+ C      0.7000  0.60…  0.4300  0.77…  0.4927  0.92…  6350   1880  6539   99052  
+ froz…                                                                          
+ Prit…                                                                          
+ +                                                                              
+ head                                                                           
+                                                                                
+undefined -> A all-non-rice: precision: no pixel predicted rice
+
+                                                                                
+ chip      region  system    f1        iou       precisi…  recall     referenc… 
+ ────────────────────────────────────────────────────────────────────────────── 
+ ph_240_…  PH-07   A         0.0000    0.0000    undefin…  0.0000     2112      
+                   all-non…                                                     
+ ph_242_…  PH-07   A         undefin…  undefin…  undefin…  undefined  0         
+                   all-non…                                                     
+ ph_243_…  PH-07   A         0.0000    0.0000    undefin…  0.0000     1061      
+                   all-non…                                                     
+ ph_245_…  PH-07   A         0.0000    0.0000    undefin…  0.0000     677       
+                   all-non…                                                     
+ ph_251_…  PH-07   A         0.0000    0.0000    undefin…  0.0000     1980      
+                   all-non…                                                     
+ ph_273_…  PH-08   A         0.0000    0.0000    undefin…  0.0000     3121      
+                   all-non…                                                     
+ ph_278_…  PH-08   A         0.0000    0.0000    undefin…  0.0000     3938      
+                   all-non…                                                     
+ ph_293_…  PH-08   A         undefin…  undefin…  undefin…  undefined  0         
+                   all-non…                                                     
+ ph_240_…  PH-07   B         0.6614    0.4941    0.5426    0.8466     2112      
+                   LightGBM                                                     
+ ph_242_…  PH-07   B         undefin…  undefin…  undefin…  undefined  0         
+                   LightGBM                                                     
+ ph_243_…  PH-07   B         0.7521    0.6027    0.7080    0.8021     1061      
+                   LightGBM                                                     
+ ph_245_…  PH-07   B         0.5206    0.3519    0.4108    0.7105     677       
+                   LightGBM                                                     
+ ph_251_…  PH-07   B         0.6188    0.4480    0.4907    0.8374     1980      
+                   LightGBM                                                     
+ ph_273_…  PH-08   B         0.8883    0.7990    0.8703    0.9071     3121      
+                   LightGBM                                                     
+ ph_278_…  PH-08   B         0.8704    0.7705    0.8677    0.8730     3938      
+                   LightGBM                                                     
+ ph_293_…  PH-08   B         undefin…  undefin…  undefin…  undefined  0         
+                   LightGBM                                                     
+ ph_240_…  PH-07   C frozen  0.3712    0.2279    0.6806    0.2552     2112      
+                   Prithvi                                                      
+                   + head                                                       
+ ph_242_…  PH-07   C frozen  undefin…  undefin…  undefin…  undefined  0         
+                   Prithvi                                                      
+                   + head                                                       
+ ph_243_…  PH-07   C frozen  0.0000    0.0000    undefin…  0.0000     1061      
+                   Prithvi                                                      
+                   + head                                                       
+ ph_245_…  PH-07   C frozen  0.5126    0.3446    0.4861    0.5421     677       
+                   Prithvi                                                      
+                   + head                                                       
+ ph_251_…  PH-07   C frozen  0.3359    0.2019    0.6279    0.2293     1980      
+                   Prithvi                                                      
+                   + head                                                       
+ ph_273_…  PH-08   C frozen  0.6806    0.5159    0.8068    0.5886     3121      
+                   Prithvi                                                      
+                   + head                                                       
+ ph_278_…  PH-08   C frozen  0.8275    0.7057    0.8561    0.8007     3938      
+                   Prithvi                                                      
+                   + head                                                       
+ ph_293_…  PH-08   C frozen  undefin…  undefin…  undefin…  undefined  0         
+                   Prithvi                                                      
+                   + head                                                       
+                                                                                
+undefined -> A all-non-rice: precision: no pixel predicted rice
+undefined -> A all-non-rice: f1: no reference rice and no predicted rice; iou: no reference rice and no predicted rice; precision: no pixel predicted rice; recall: no reference rice pixel
+undefined -> A all-non-rice: precision: no pixel predicted rice
+undefined -> A all-non-rice: precision: no pixel predicted rice
+undefined -> A all-non-rice: precision: no pixel predicted rice
+undefined -> A all-non-rice: precision: no pixel predicted rice
+undefined -> A all-non-rice: precision: no pixel predicted rice
+undefined -> A all-non-rice: f1: no reference rice and no predicted rice; iou: no reference rice and no predicted rice; precision: no pixel predicted rice; recall: no reference rice pixel
+undefined -> B LightGBM: f1: no reference rice and no predicted rice; iou: no reference rice and no predicted rice; precision: no pixel predicted rice; recall: no reference rice pixel
+undefined -> B LightGBM: f1: no reference rice and no predicted rice; iou: no reference rice and no predicted rice; precision: no pixel predicted rice; recall: no reference rice pixel
+undefined -> C frozen Prithvi + head: f1: no reference rice and no predicted rice; iou: no reference rice and no predicted rice; precision: no pixel predicted rice; recall: no reference rice pixel
+undefined -> C frozen Prithvi + head: precision: no pixel predicted rice
+undefined -> C frozen Prithvi + head: f1: no reference rice and no predicted rice; iou: no reference rice and no predicted rice; precision: no pixel predicted rice; recall: no reference rice pixel
+[colab] Executing cell 11/13 - rice-27...
+validation_error_maps.png                                                       
+<IPython.core.display.Image object>
+
+[Image saved to: /tmp/tmpyc91zvrv.png]
+validation_patch_effect.png                                                     
+<IPython.core.display.Image object>
+
+[Image saved to: /tmp/tmpcpq7g2os.png]
+[colab] Executing cell 12/13 - rice-30...
+Running export - one process per stage; log: /content/outputs/philippines_rice/3e1bc113bd4f/export.log
+{"stage": "export", "seconds": 1.07, "geotiffs": 24, "peak_gpu_gib": 0.0}
+Running reload - one process per stage; log: /content/outputs/philippines_rice/3e1bc113bd4f/reload.log
+/content/outputs/philippines_rice/3e1bc113bd4f/env/lib/python3.12/site-packages/torch/jit/_script.py:1491: FutureWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+{"stage": "reload", "seconds": 24.25, "peak_gpu_gib": 1.306}
+Running report - one process per stage; log: /content/outputs/philippines_rice/3e1bc113bd4f/report.log
+{"stage": "report", "seconds": 0.52, "zip_members": 49, "peak_gpu_gib": 0.0}
+
+                                                                                
+ Record                              Value                                      
+ ────────────────────────────────────────────────────────────────────────────── 
+ artifact_digests_verified           true                                       
+ base_model_strict_load              true                                       
+ binary_decisions_identical          true                                       
+ geotiffs_match_and_georeferenced    true                                       
+ max_abs_score_difference            0.0000                                     
+ meaning                             the saved computation is reproducible from 
+                                     files in a fresh process; not evidence of  
+                                     accuracy                                   
+ metrics_recomputed_from_geotiffs    true                                       
+ results_zip: members                49                                         
+ results_zip: verified               true                                       
+ score_and_all_pixel_geotiffs_match  true                                       
+ tolerance                           0.0001                                     
+                                                                                
+/content/outputs/philippines_rice/3e1bc113bd4f/outputs/results.zip              
+                               This run's answer                                
+
+Validation metrics (8 chips, PH-07/PH-08, pooled over labelled pixels):         
+
+ • A all-non-rice: F1 0.000, IoU 0.000, precision undefined, recall 0.000       
+ • B LightGBM: F1 0.758, IoU 0.610, precision 0.679, recall 0.857               
+ • C frozen Prithvi + head: F1 0.601, IoU 0.430, precision 0.772, recall 0.493  
+
+Answer to the driving question, from this run: on the labelled pixels of these 8
+validation chips, the head on frozen Prithvi-EO-2.0 features (C, F1 0.601) did  
+not map rice better than the spectral-temporal LightGBM baseline (B, F1 0.758); 
+calling everything non-rice (A) scored F1 0.000.                                
+
+Evidence level: tutorial evidence from one run at teaching scale: 8 validation  
+chips from two neighbouring regions, scored once after every choice was frozen  
+on development chips; map-derived labels; no confidence intervals. It does not  
+establish which approach is better nationally or operationally.                 
+
+                              Conclusion scaffold                               
+
+Complete in your own words:                                                     
+
+▌ On the labelled pixels of eight validation chips from two regions, [system] 
+▌ reached a pooled rice F1 of [value] against [baselines]. On the development 
+▌ chips, [T=1 vs T=4 result]. The error maps show [pattern], and the 320 m    
+▌ patch grid [effect]. Labels are published map products, the sample is small 
+▌ and spatially clustered, and Prithvi's pretraining overlap with these places
+▌ is unknown, so [bounded claim]. Next we would [specific evidence].          
+[colab] Executing cell 13/13 - rice-33...
+BYOD not run (USE_BYOD = False).
+[colab] Saving notebook with outputs to '/home/kurt/colab-runs/prithvi-eo-feature-extraction-pipeline-6130de4-8c3a36/DIMER_Philippines_Rice_Mapping_Capstone_6130de4_colab-cli-t4_output.ipynb'...

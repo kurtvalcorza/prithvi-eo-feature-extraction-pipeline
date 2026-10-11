@@ -12,7 +12,7 @@ Status (as prepared 2026-10-11): design, with dataset files and checksums verifi
 - Artifact: `tutorials/DIMER_Philippines_Rice_Mapping_Capstone.ipynb`.
 - Proposed host: `kurtvalcorza/prithvi-eo-feature-extraction-pipeline` (it carries the verified Prithvi-EO-2.0-300M base model, pinned revision `9eb1b1102806593963daa333bcc491b1c6f8562f`, checkpoint SHA-256 `faab2c8b…6e7`).
 - Preserve the existing tutorial and the EO & Climate workshop; this is a separate capstone reusing the repo's verified loading semantics.
-- Normative basis: DIMER Notebook Specification (current); profile `E2E`, mode `WORKSHOP`, standalone (D1).
+- Normative basis: DIMER Notebook Specification (current; 2.4 since the 2026-10-11 review fixes); profile `E2E`, mode `WORKSHOP`, kind `CAPSTONE`, standalone (D1).
 - Placement: optional capstone after the "Rice from space" course lessons L3 (Sentinel-2 LightGBM) and L3B (AlphaEarth LightGBM). It links to them rather than re-teaching feature engineering.
 - Default: public pinned data, credential-free, no uploads, no manual restart, fresh Colab T4.
 - GPU execution only on authorised hosted compute (Colab or Kaggle). Local verification is CPU-only and must not run while the rice study's memory-heavy jobs are active.
@@ -20,7 +20,7 @@ Status (as prepared 2026-10-11): design, with dataset files and checksums verifi
 
 ## 2. Learning outcomes
 
-Learners will explain Sentinel-2 bands, 20 m pixels, cloud gaps and temporal compositing; explain why rice is a temporal signal (flooding, then green-up, then harvest); build the input a pretrained model expects without resizing; train a small head on frozen features; compare it with a baseline under a frozen protocol; interpret pooled precision, recall, F1 and IoU on a minority class; run one controlled experiment; and write a bounded conclusion.
+Learners will explain Sentinel-2 bands, 20 m pixels, cloud gaps and temporal compositing; explain why rice is a temporal signal (flooding, then green-up, then harvest); trace how the input a pretrained model expects is built without resizing; run the training of a small head on frozen features; compare it with a baseline under a frozen protocol; interpret pooled precision, recall, F1 and IoU on a minority class; run one controlled experiment; and write a bounded conclusion.
 
 Shared sequence: orient -> Input / Model / Output -> predict -> run -> notice -> interpret -> change one thing -> compare -> conclude.
 
@@ -90,7 +90,7 @@ Reference only (not re-run): course lessons report teaching-scale F1 on the same
 9. Controlled activity on dev (§8); freeze the record.
 10. Single validation scoring of A, B, C.
 11. Interpretation: pooled metrics, per-chip table (undefined values stated), disagreement and error maps, the 320 m patch effect.
-12. Export, fresh reload of the head artifact, integrity verification, conclusion scaffold, attribution, References (APA 7 with DOIs).
+12. Export, fresh reload of the head artifact, integrity verification, the run's own answer to the driving question (computed from its validation table, with its evidence level) followed by a conclusion scaffold, attribution, References (IEEE numbered citations, each entry with a DOI or a link pinned to the revision used; NOTEBOOK_SPEC 2.4 DOC14–DOC16). The opening carries the 2.4 use notice, a problem statement and a data context (DOC1–DOC8, DOC17–DOC21).
 
 ## 8. Controlled learner experiment
 
@@ -106,7 +106,7 @@ Change one thing on development chips only: **number of frames, T = 1 (best sing
 
 ## 10. Artifacts and reproducibility
 
-`results.zip`: `run_summary.json`, `data_manifest.json`, `preprocessing.json` (frames chosen, filled fractions), `selection.json`, `metrics.csv`, `per_chip_metrics.csv`, `activity.csv`, the head adapter (safetensors + manifest), prediction GeoTIFFs (0/1/255), figures, `conclusion.md`, `checksums.json`, attribution text. No base weights or source imagery in the bundle. Fresh-process reload must reproduce validation predictions exactly (or within declared tolerance with identical binary output).
+`results.zip`: `run_summary.json`, `data_manifest.json`, `preprocessing.json` (frames chosen, filled fractions), `selection.json`, `metrics.csv`, `per_chip_metrics.csv`, `activity.csv`, the head adapter (safetensors + manifest), prediction GeoTIFFs per validation chip (the scored map 0/1/255, where 255 marks pixels the reference ignores; a 0/1 decision for every pixel; float32 rice scores so a user can re-threshold), all three checked by the reload, figures, `conclusion.md`, `checksums.json`, attribution text. No base weights or source imagery in the bundle. Fresh-process reload must reproduce validation predictions exactly (or within declared tolerance with identical binary output).
 
 ## 11. Runtime and scope controls
 
