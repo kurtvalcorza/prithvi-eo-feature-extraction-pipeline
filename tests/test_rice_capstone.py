@@ -134,6 +134,37 @@ def test_label_mapping_ignores_255_and_refuses_other_values():
     assert cap.confusion(np.array([[0.5]]), np.array([[1]]), 0.5)["tp"] == 1  # score >= threshold is rice
 
 
+@pytest.mark.parametrize("fill", [0, 1, 255])
+def test_label_two_probe_is_invalid_even_on_a_chip_without_rice(fill):
+    # c36c3d8 hosted run: the first fit chip had no rice, so mapping 1 -> 2 changed nothing and the probe passed.
+    chip = _chip()
+    chip["label"] = np.full_like(chip["label"], fill)
+    bad = cap._with_label_two(chip["label"])
+    assert (bad == 2).sum() == 1 and (chip["label"] == fill).all()  # one pixel changed; the original is untouched
+    with pytest.raises(cap.ChipError, match="outside 0"):
+        cap.validate_chip({**chip, "label": bad}, name="probe")
+
+
+def test_stages_refuse_to_start_before_their_prerequisites_and_clear_stale_receipts(tmp_path):
+    # c36c3d8 hosted run: prepare failed, yet later stages ran on the records it had already written.
+    ctx = cap.Context(tmp_path)
+    receipts = ctx.work / "receipts"
+    receipts.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(RuntimeError, match="prepare"):
+        cap.start_stage(ctx, "baseline")
+    for name in ("prepare", "baseline", "features", "train-head"):
+        (receipts / f"{name}.json").write_text("{}")
+    with pytest.raises(RuntimeError, match="activity"):
+        cap.start_stage(ctx, "evaluate")
+    (receipts / "activity.json").write_text("{}")
+    (receipts / "evaluate.json").write_text("{}")
+    cap.start_stage(ctx, "evaluate")  # a re-run first deletes its own stale receipt
+    assert not (receipts / "evaluate.json").exists()
+    cap.start_stage(ctx, "prepare")  # a fresh prepare invalidates every downstream receipt
+    assert not list(receipts.glob("*.json"))
+    assert set(cap.PREREQUISITES) == (set(cap.STAGES) - {"prepare"}) | {"byod"}
+
+
 def test_metric_edge_cases_report_null_with_reasons():
     no_rice = np.zeros((4, 4), dtype=np.uint8)
     silent = cap.scores(cap.confusion(np.zeros((4, 4)), no_rice, 0.5))

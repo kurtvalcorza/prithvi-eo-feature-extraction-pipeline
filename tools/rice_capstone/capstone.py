@@ -799,6 +799,7 @@ def stage_prepare(ctx: Context) -> None:
     for role in ("development", "validation"):
         if not any(t["rice_pixels"] for t in table if t["role"] == role):
             raise ValueError(f"no reference rice pixel in the {role} chips; the comparison cannot be scored")
+    probes = _refusal_probes(chips[roles["fit"][0]]["path"])  # validation must refuse bad chips before anything is written
     write_json(ctx.work / "records.json", {"chips": chips, "roles": roles, "dataset_root": str(root), "layout": layout})
     write_csv(ctx.out / "chips.csv", table)
     write_json(ctx.out / "preprocessing.json", {
@@ -817,7 +818,6 @@ def stage_prepare(ctx: Context) -> None:
         "package_sha256_downloaded": package,
     })
     _prepare_figures(ctx, chips, table, valid_counts)
-    probes = _refusal_probes(chips[roles["fit"][0]]["path"])
     write_json(ctx.out / "prepare.json", {
         "layout": layout, "chips": len(chips), "roles": {k: len(v) for k, v in roles.items()},
         "development_regions": split["development_regions"], "fit_regions": split["fit_regions"],
@@ -826,12 +826,20 @@ def stage_prepare(ctx: Context) -> None:
     ctx.receipt("prepare", chips=len(chips), layout=layout)
 
 
+def _with_label_two(label: np.ndarray) -> np.ndarray:
+    """A copy of `label` with one labelled pixel set to 2, so the probe is invalid whether or not the chip holds rice."""
+    bad = np.array(label, dtype=np.uint8, copy=True)
+    labelled = np.flatnonzero(bad != 255)
+    bad.flat[labelled[0] if labelled.size else 0] = 2
+    return bad
+
+
 def _refusal_probes(path: str) -> list[dict[str, str]]:
     chip = read_chip_h5(Path(path))
     base = {"S2": chip["S2"], "S2_valid": chip["S2_valid"], "label": chip["label"]}
     cases = {
         "12 bins instead of 24": {**base, "S2": base["S2"][:12]},
-        "label value 2": {**base, "label": np.where(base["label"] == 1, 2, base["label"]).astype(np.uint8)},
+        "label value 2": {**base, "label": _with_label_two(base["label"])},
         "reflectance x 10 000": {**base, "S2": np.nan_to_num(base["S2"]) * 10000.0},
     }
     results = []
@@ -1606,6 +1614,27 @@ STAGES: dict[str, Callable[[Context], None]] = {
 }
 
 
+# Stages whose receipt must exist before a stage may start. A stage deletes its own receipt when it starts, and
+# prepare deletes every receipt, so a failed or repeated upstream stage can never leave downstream work looking current.
+PREREQUISITES: dict[str, tuple[str, ...]] = {
+    "baseline": ("prepare",), "features": ("prepare",), "train-head": ("baseline", "features"),
+    "activity": ("train-head",), "finetune": ("train-head",), "evaluate": ("baseline", "train-head", "activity"),
+    "export": ("evaluate",), "reload": ("export",), "report": ("reload",), "byod": ("train-head",),
+}
+
+
+def start_stage(ctx: Context, stage: str) -> None:
+    """Refuse to run `stage` until its prerequisite stages have completed, then clear its stale receipt."""
+    receipts = ctx.work / "receipts"
+    missing = [name for name in PREREQUISITES.get(stage, ()) if not (receipts / f"{name}.json").exists()]
+    if missing:
+        raise RuntimeError(f"{stage} needs the {', '.join(missing)} stage(s) to complete first; run the cells in order")
+    if stage == "prepare":
+        for old in receipts.glob("*.json"):
+            old.unlink()
+    (receipts / f"{stage}.json").unlink(missing_ok=True)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, required=True)
@@ -1613,6 +1642,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--input", type=Path, default=None, help="BYOD directory of .h5 chips")
     args = parser.parse_args(argv)
     ctx = Context(args.root)
+    start_stage(ctx, args.stage)
     if args.stage == "byod":
         if args.input is None:
             parser.error("--input is required for --stage byod")
