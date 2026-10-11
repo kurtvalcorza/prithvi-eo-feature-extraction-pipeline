@@ -219,10 +219,13 @@ def georeference_attrs(raw: Mapping[str, Any]) -> dict[str, Any]:
     Coordinates must be finite; plain ones are refused with any CRS other than EPSG:32651, and an affine grid is used
     only when it is EPSG:32651, 20 m and north-up. Anything else stays ungeoreferenced rather than mislocated."""
 
-    def text(value: Any) -> str:
-        return value.decode("utf-8") if isinstance(value, bytes) else str(value)
+    def text(value: Any) -> str | None:
+        try:
+            return value.decode("utf-8") if isinstance(value, bytes) else str(value)
+        except UnicodeDecodeError:
+            return None  # an undecodable optional attribute is unusable, not fatal
 
-    crs = text(raw["crs"]) if "crs" in raw else None
+    crs = (text(raw["crs"]) or "<undecodable>") if "crs" in raw else None
     attrs: dict[str, Any] = {}
     if "x_min" in raw and "y_max" in raw and crs in (None, "EPSG:32651"):
         try:
@@ -241,8 +244,9 @@ def georeference_attrs(raw: Mapping[str, Any]) -> dict[str, Any]:
         if crs == "EPSG:32651" and (a, b, d, e) == (20.0, 0.0, 0.0, -20.0) and math.isfinite(c) and math.isfinite(f):
             attrs.update(x_min=c, y_max=f)
     for key in ("group", "group_id"):
-        if key in raw:
-            attrs["group"] = text(raw[key])
+        group = text(raw[key]) if key in raw else None
+        if group:
+            attrs["group"] = group
             break
     return attrs
 
@@ -1079,6 +1083,10 @@ def stage_features(ctx: Context) -> None:
     ctx.receipt("features")
 
 
+HEAD_OUTPUT_ORDER = ("both logit channels bilinearly upsampled from 8 x 8 to 128 x 128 px (align_corners=False), then "
+                     "softmax over the two channels; the rice score is channel 1")
+
+
 def _head_module(torch: Any, in_channels: int = EMBED_DIM, hidden: int = HEAD_HIDDEN):
     nn = torch.nn
 
@@ -1336,7 +1344,8 @@ def drop_stale_finetune(ctx: Context) -> bool:
     if stale:
         write_json(selection_path, selection)
         print("C-FT dropped: its fine-tune receipt is not current (an upstream stage re-ran or the fine-tune failed)")
-    (ctx.work / "cft_validation_probs.npz").unlink(missing_ok=True)
+    for stale_file in (ctx.work / "cft_validation_probs.npz", ctx.out / "finetune.json", ctx.out / "finetune_curve.csv"):
+        stale_file.unlink(missing_ok=True)  # results.zip bundles everything under outputs/, so nothing stale may remain
     return stale
 
 
@@ -1451,7 +1460,7 @@ def _head_metadata(selection: Mapping[str, Any], role: str) -> dict[str, Any]:
         "feature_layer_zero_based": FEATURE_LAYER, "frames": "clearest bin per calendar quarter, earliest on ties (T=4)",
         "normalisation": {"scale": pp.REFLECTANCE_SCALE, "means": list(pp.MEANS), "stds": list(pp.STDS),
                           "missing_fill": 0.0},
-        "pooling": "temporal mean of patch tokens", "output": "softmax rice score, bilinear upsample to 128 px",
+        "pooling": "temporal mean of patch tokens", "output": HEAD_OUTPUT_ORDER,
         "threshold": selection["C"]["threshold"], "decision": "rice if score >= threshold",
         "classes": {"0": "non-rice", "1": "rice"}, "training": selection["C"]["config"],
         "selected_epoch": selection["C"]["selected_epoch"], "selection_basis": role,
@@ -1573,6 +1582,12 @@ def bundle_results(ctx: Context) -> dict[str, Any]:
 
 
 # ---- BYOD -------------------------------------------------------------------------------------------
+
+
+def has_labelled_pixels(label: np.ndarray | None) -> bool:
+    """True when a label exists and at least one pixel is 0 or 1; an all-255 mask can only be predicted, not adapted on
+    (a training batch of ignored targets alone would make the mean cross-entropy NaN)."""
+    return label is not None and bool((np.asarray(label) != IGNORE).any())
 
 
 def byod_group(stem: str, attrs: Mapping[str, Any]) -> str:
@@ -1702,7 +1717,7 @@ def stage_byod(ctx: Context, sources: Sequence[Path]) -> None:
             row.update(scores(confusion(p, chip["label"], manifest["threshold"])))
         rows.append(row)
     write_csv(out / "byod_canonical_head.csv", rows, table_columns(rows))
-    labelled = [cid for cid, c in chips.items() if c["label"] is not None]
+    labelled = [cid for cid, c in chips.items() if has_labelled_pixels(c["label"])]
     summary: dict[str, Any] = {"chips": len(chips), "labelled": len(labelled), "canonical_threshold": manifest["threshold"],
                                "data_location": "processed inside this runtime only; nothing is uploaded elsewhere"}
     if len(labelled) >= BYOD_MIN_ADAPT_CHIPS:

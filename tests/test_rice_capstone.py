@@ -288,6 +288,35 @@ def test_the_bundled_verification_record_equals_the_displayed_one(tmp_path):
         assert json.loads(archive.read("verification.json")) == shown
 
 
+def test_round_codex_539b865_findings():
+    # 1. the manifest's output description follows the real order: upsample the logits, then softmax.
+    assert cap.HEAD_OUTPUT_ORDER.index("upsampled") < cap.HEAD_OUTPUT_ORDER.index("softmax")
+    assert "align_corners=False" in cap.HEAD_OUTPUT_ORDER
+    # 3. undecodable optional attributes leave the chip ungeoreferenced instead of raising.
+    real = {"affine": "[20.0, 0.0, 614400.0, 0.0, -20.0, 1095680.0]", "crs": "EPSG:32651", "group_id": "ph_240_427"}
+    assert cap.georeference_attrs({**real, "crs": b"\xff\xfe"}) == {"group": "ph_240_427"}
+    assert cap.georeference_attrs({"x_min": 1.0, "y_max": 2.0, "crs": b"\xff"}) == {}
+    assert cap.georeference_attrs({**real, "group_id": b"\xff", "group": b"\xfe"}) == {"x_min": 614400.0,
+                                                                                        "y_max": 1095680.0}
+    assert cap.georeference_attrs({**real, "affine": b"\xff"}) == {"group": "ph_240_427"}
+    # 4. an all-ignore label is not labelled for adaptation; one 0 or 1 is enough.
+    assert not cap.has_labelled_pixels(None)
+    assert not cap.has_labelled_pixels(np.full((4, 4), 255, dtype=np.uint8))
+    assert cap.has_labelled_pixels(np.array([[255, 0]], dtype=np.uint8))
+
+
+def test_dropping_stale_fine_tuning_removes_its_output_records(tmp_path):
+    # 2. Codex on 539b865: finetune.json and finetune_curve.csv stayed in outputs/ and were bundled into results.zip.
+    ctx = cap.Context(tmp_path)
+    (ctx.work / "receipts").mkdir(parents=True, exist_ok=True)
+    cap.write_json(ctx.out / "selection.json", {"B": {}, "C": {}, "activity": {}, "C-FT": {"selected_before_validation": True}})
+    for path in (ctx.out / "finetune.json", ctx.out / "finetune_curve.csv", ctx.work / "cft_validation_probs.npz"):
+        path.write_text("stale")
+    assert cap.drop_stale_finetune(ctx) is True
+    assert not any(p.exists() for p in (ctx.out / "finetune.json", ctx.out / "finetune_curve.csv",
+                                        ctx.work / "cft_validation_probs.npz"))
+
+
 def test_metric_edge_cases_report_null_with_reasons():
     no_rice = np.zeros((4, 4), dtype=np.uint8)
     silent = cap.scores(cap.confusion(np.zeros((4, 4)), no_rice, 0.5))
