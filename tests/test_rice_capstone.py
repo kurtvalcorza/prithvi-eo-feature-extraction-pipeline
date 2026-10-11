@@ -365,8 +365,11 @@ def test_issue_17_follow_ups(tmp_path):
     (ctx.out / "predictions").mkdir()
     for name in ("verification.json", "results.zip", "run_summary.json", "conclusion.md", "metrics.csv"):
         (ctx.out / name).write_text("old")
+    (ctx.out / "byod").mkdir()
+    (ctx.out / "byod_results.zip").write_text("old")
     cap.start_stage(ctx, "export")
-    gone = ("head_adapter", "predictions", "verification.json", "results.zip", "run_summary.json", "conclusion.md")
+    gone = ("head_adapter", "predictions", "verification.json", "results.zip", "run_summary.json", "conclusion.md",
+            "byod", "byod_results.zip")  # Codex on 79900c2: BYOD outputs depend on the reloaded head too
     assert not any((ctx.out / name).exists() for name in gone)
     assert (ctx.out / "metrics.csv").exists()  # evaluate's outputs stay: evaluate did not restart
     # 3. the canonical bundle excludes BYOD outputs and the BYOD bundle.

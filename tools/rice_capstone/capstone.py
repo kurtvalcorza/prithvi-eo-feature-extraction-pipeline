@@ -1813,6 +1813,7 @@ STAGE_OUTPUTS: dict[str, tuple[str, ...]] = {
     "export": ("head_adapter", "predictions"),
     "reload": ("verification.json",),
     "report": ("results.zip", "run_summary.json", "conclusion.md"),
+    "byod": ("byod", "byod_results.zip"),
 }
 
 
