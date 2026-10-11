@@ -465,7 +465,7 @@ With 24 fit chips the head can memorise the fit set; the development curve is wh
 
 SEC6 = r"""## 6. Change one thing: one frame versus four · [Evaluation practice]
 
-**Predict → Change one thing → Run → Observe → Explain.** Keep the weights, the head, the seed, the epoch count (C's selected epoch) and the threshold fixed. Change only the number of frames: **T = 1** — only one quarter's clearest frame, tried for each of the four quarters — versus the canonical **T = 4**. Everything is scored on development chips only; validation is untouched.
+**Predict → Change one thing → Run → Observe → Explain.** Keep the frozen Prithvi weights, the head's recipe (architecture, optimiser, seed), the epoch count (C's selected epoch) and the threshold fixed, and train one head per frame count with that recipe. Change only the number of frames: **T = 1** — only one quarter's clearest frame, tried for each of the four quarters — versus the canonical **T = 4**. Everything is scored on development chips only; validation is untouched.
 
 **Predict before running:** which single quarter will work best? How far below T = 4 will it fall?
 
@@ -475,7 +475,7 @@ CELL_ACTIVITY = r"""run_stage('activity')
 show_table('activity.csv', ['variant', 'epochs', 'threshold', 'f1', 'iou', 'precision', 'recall'])
 show_figures('activity_*')"""
 
-AFTER_ACTIVITY = r"""**Observe and explain:** compare the best single quarter with T = 4. The T = 4 row reproduces C's development result exactly (same seed and epochs), which shows the activity changed only the frames.
+AFTER_ACTIVITY = r"""**Observe and explain:** compare the best single quarter with T = 4. The T = 4 row reproduces C's development result exactly (same recipe, seed and epochs), which shows the procedure is unchanged; each T = 1 row is a head trained with the same recipe on one-frame features, so the comparison asks how much information one frame carries, not how C copes with fewer frames.
 
 <details>
 <summary>Check your reasoning (open after answering)</summary>

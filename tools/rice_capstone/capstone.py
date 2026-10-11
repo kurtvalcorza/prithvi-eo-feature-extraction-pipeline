@@ -229,19 +229,28 @@ def validate_chip(arrays: Mapping[str, Any], *, name: str = "chip", require_labe
 
 def georeference_attrs(raw: Mapping[str, Any]) -> dict[str, Any]:
     """Upper-left x_min/y_max and the site group from HDF5 attributes. Accepts this dataset's own schema (`affine` as a
-    JSON list [a, b, c, d, e, f], `crs`, `group_id`) and the plain `x_min`/`y_max`/`group` form. An affine grid is used
-    only when it is EPSG:32651, 20 m and north-up; anything else stays ungeoreferenced rather than mislocated."""
+    JSON list [a, b, c, d, e, f], `crs`, `group_id`) and the plain `x_min`/`y_max`/`group` form. Coordinates must be
+    finite; plain ones are refused with any CRS other than EPSG:32651, and an affine grid is used only when it is
+    EPSG:32651, 20 m and north-up. Anything else stays ungeoreferenced rather than mislocated."""
 
     def text(value: Any) -> str:
         return value.decode("utf-8") if isinstance(value, bytes) else str(value)
 
-    attrs: dict[str, Any] = {key: float(raw[key]) for key in ("x_min", "y_max") if key in raw}
+    crs = text(raw["crs"]) if "crs" in raw else None
+    attrs: dict[str, Any] = {}
+    if "x_min" in raw and "y_max" in raw and crs in (None, "EPSG:32651"):
+        try:
+            x_min, y_max = float(raw["x_min"]), float(raw["y_max"])
+        except (TypeError, ValueError):
+            x_min = y_max = math.nan
+        if math.isfinite(x_min) and math.isfinite(y_max):
+            attrs.update(x_min=x_min, y_max=y_max)
     if "affine" in raw and not attrs:
         try:
             a, b, c, d, e, f = (float(v) for v in json.loads(text(raw["affine"])))
         except (TypeError, ValueError):
             a = b = c = d = e = f = math.nan
-        if text(raw.get("crs", "")) == "EPSG:32651" and (a, b, d, e) == (20.0, 0.0, 0.0, -20.0):
+        if crs == "EPSG:32651" and (a, b, d, e) == (20.0, 0.0, 0.0, -20.0) and math.isfinite(c) and math.isfinite(f):
             attrs.update(x_min=c, y_max=f)
     for key in ("group", "group_id"):
         if key in raw:
@@ -1204,7 +1213,8 @@ def stage_activity(ctx: Context) -> None:
     maps = {}
     for name, filename, _short in variants:
         cache = dict(np.load(ctx.work / filename))
-        # fixed epoch count = C's selected epoch; only the frames change (the T=4 row reproduces C exactly)
+        # one head per frame count with C's recipe, seed and selected epoch count; only the input frames differ
+        # (the T=4 row reproduces C exactly). Kurt, 2026-10-11: this measures one frame's information, not C's robustness.
         state, _curve = train_head(torch, _stack(cache, roles["fit"]), fit_y, _stack(cache, roles["development"]), dev_y,
                                    epochs, select_best=False, log=lambda _m: None)
         probs = head_probabilities(torch, _load_head(torch, state), _stack(cache, roles["development"]))
@@ -1326,12 +1336,29 @@ def stage_finetune(ctx: Context) -> None:
     ctx.receipt("finetune", selected_epoch=best["epoch"])
 
 
+def drop_stale_finetune(ctx: Context) -> bool:
+    """Remove the C-FT selection entry and its sealed predictions unless the finetune stage's receipt is current (a
+    later upstream restart invalidates it, and a fine-tune that failed after writing files never wrote one). Returns
+    whether anything was dropped. Called before the freeze, so stale C-FT results can never be scored."""
+    if (ctx.work / "receipts" / "finetune.json").exists():
+        return False
+    selection_path = ctx.out / "selection.json"
+    selection = read_json(selection_path)
+    stale = selection.pop("C-FT", None) is not None
+    if stale:
+        write_json(selection_path, selection)
+        print("C-FT dropped: its fine-tune receipt is not current (an upstream stage re-ran or the fine-tune failed)")
+    (ctx.work / "cft_validation_probs.npz").unlink(missing_ok=True)
+    return stale
+
+
 def stage_evaluate(ctx: Context) -> None:
     import lightgbm as lgb
 
     torch = _torch_setup()
     if (ctx.work / "frozen.json").exists():
         raise RuntimeError("validation was already scored in this run directory; scoring happens exactly once")
+    drop_stale_finetune(ctx)
     selection_path = ctx.out / "selection.json"
     selection = read_json(selection_path)
     for key in ("B", "C", "activity"):
@@ -1354,7 +1381,7 @@ def stage_evaluate(ctx: Context) -> None:
     thresholds = {"A all-non-rice": 0.5, "B LightGBM": selection["B"]["threshold"],
                   "C frozen Prithvi + head": selection["C"]["threshold"]}
     if selection.get("C-FT", {}).get("selected_before_validation"):
-        sealed = dict(np.load(ctx.work / "cft_validation_probs.npz"))
+        sealed = dict(np.load(ctx.work / "cft_validation_probs.npz"))  # current: drop_stale_finetune ran before the freeze
         probs["C-FT fine-tuned (opt-in)"] = [sealed[cid] for cid in ids]
         thresholds["C-FT fine-tuned (opt-in)"] = selection["C-FT"]["threshold"]
     rows, chip_rows = [], []
@@ -1613,8 +1640,13 @@ def collect_byod(sources: Sequence[Path], target: Path) -> list[Path]:
         if member is None:
             shutil.copy2(origin, target / name)
         else:
-            with zipfile.ZipFile(origin) as archive:
-                (target / name).write_bytes(archive.read(member))
+            with zipfile.ZipFile(origin) as archive, archive.open(member) as source, (target / name).open("wb") as sink:
+                copied = 0
+                while chunk := source.read(1 << 20):  # bounded memory; the declared size is not trusted
+                    copied += len(chunk)
+                    if copied > BYOD_MAX_BYTES:
+                        raise ChipError(f"{origin.name}:{member} expands beyond {BYOD_MAX_BYTES // 2**30} GiB; refused")
+                    sink.write(chunk)
     return sorted(target.glob("*.h5"))
 
 

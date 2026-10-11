@@ -166,6 +166,21 @@ def test_stages_refuse_to_start_before_their_prerequisites_and_clear_stale_recei
     assert cap.PREREQUISITES["byod"] == ("reload",)  # BYOD loads the exported head_adapter, verified by reload
 
 
+def test_stale_fine_tune_results_are_dropped_before_the_validation_freeze(tmp_path):
+    # Codex P2 on 42d8f40: rerunning train-head after a fine-tune invalidated its receipt, but the C-FT selection and
+    # sealed predictions stayed and would have been scored beside the new canonical systems.
+    ctx = cap.Context(tmp_path)
+    (ctx.work / "receipts").mkdir(parents=True, exist_ok=True)
+    cap.write_json(ctx.out / "selection.json", {"B": {}, "C": {}, "activity": {}, "C-FT": {"selected_before_validation": True}})
+    np.savez(ctx.work / "cft_validation_probs.npz", a=np.zeros(2))
+    (ctx.work / "receipts" / "finetune.json").write_text("{}")
+    assert cap.drop_stale_finetune(ctx) is False  # a current receipt keeps C-FT
+    (ctx.work / "receipts" / "finetune.json").unlink()  # as a train-head restart or a failed fine-tune leaves it
+    assert cap.drop_stale_finetune(ctx) is True
+    assert "C-FT" not in cap.read_json(ctx.out / "selection.json")
+    assert not (ctx.work / "cft_validation_probs.npz").exists()
+
+
 def test_restarting_an_upstream_stage_invalidates_every_dependent_receipt(tmp_path):
     # Agent Relay review R3 on 8fbcaa6: restarting features and failing left train-head/activity receipts, and
     # evaluate (whose direct prerequisites omit features) still accepted the run.
@@ -213,6 +228,16 @@ def test_byod_collection_starts_clean_and_refuses_duplicates_unsafe_and_oversize
         cap.collect_byod([site_a, site_b], target)
     with pytest.raises(cap.ChipError, match="expected a folder"):
         cap.collect_byod([tmp_path / "notes.txt"], target)
+    # Codex P2 on 42d8f40: members are streamed and the expanded size is enforced while copying.
+    monkeypatch.setattr(cap, "BYOD_MAX_FILES", 200)
+    big = tmp_path / "big.zip"
+    with zipfile.ZipFile(big, "w", compression=zipfile.ZIP_DEFLATED) as handle:
+        handle.writestr("big_2020.h5", bytes(3 << 20))
+    monkeypatch.setattr(cap, "BYOD_MAX_BYTES", 4 << 20)
+    assert [p.stat().st_size for p in cap.collect_byod([big], target)] == [3 << 20]
+    monkeypatch.setattr(cap, "BYOD_MAX_BYTES", 2 << 20)
+    with pytest.raises(cap.ChipError, match="exceeds"):
+        cap.collect_byod([big], target)
 
 
 def test_metric_edge_cases_report_null_with_reasons():
@@ -349,6 +374,11 @@ def test_georeference_reads_the_datasets_own_affine_crs_and_group_id_attributes(
     assert cap.georeference_attrs({**real, "crs": "EPSG:4326"}) == {"group": "ph_240_427"}  # never mislocated
     assert cap.georeference_attrs({**real, "affine": "[10.0, 0.0, 1.0, 0.0, -10.0, 2.0]"}) == {"group": "ph_240_427"}
     assert cap.georeference_attrs({"affine": "not json", "crs": "EPSG:32651"}) == {}
+    # Codex P2 on 42d8f40: plain coordinates must be finite and must not come with an incompatible CRS.
+    assert cap.georeference_attrs({"x_min": 1.0, "y_max": 2.0, "crs": "EPSG:4326"}) == {}
+    assert cap.georeference_attrs({"x_min": float("nan"), "y_max": 2.0}) == {}
+    assert cap.georeference_attrs({"x_min": 1.0, "y_max": 2.0, "crs": b"EPSG:32651"}) == {"x_min": 1.0, "y_max": 2.0}
+    assert cap.georeference_attrs({**real, "affine": "[20.0, 0.0, NaN, 0.0, -20.0, 2.0]"}) == {"group": "ph_240_427"}
 
 
 def test_hdf5_reader_refuses_an_oversized_declared_shape_before_reading_it(tmp_path):
