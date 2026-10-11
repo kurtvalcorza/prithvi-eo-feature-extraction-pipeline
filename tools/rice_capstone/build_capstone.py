@@ -34,7 +34,7 @@ UV_WHEEL = {  # identical to the EO workshop's pinned uv (tools/eo_workshop/buil
 MANAGED_PYTHON = "3.12.12"
 DATA_MANIFEST = {
     "slug": "kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching",
-    "version": 1,
+    "version": 2,  # data archives, INDEX.jsonl and member hashes are identical to version 1
     "url": "https://www.kaggle.com/datasets/kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching",
     "license": "CC BY 4.0 (component terms in RIGHTS.md continue to apply)",
     "access": "public; anonymous download, no credential",
@@ -44,7 +44,7 @@ DATA_MANIFEST = {
         "data-validation.zip": "4af5c646c9888bce39b2c8a2a2a0e709d8dc01b1609c67ad0c212553038beaa7",
         "development-example.zip": "3d4e8de06ba0d8fd7450d2a9bcc6da07dbd23c5a8ae289104a6fc8584155a823",
         "INDEX.jsonl": "e92bbb9f20d1f7efb225d568e2a44a6ae3d59faab9079590e2dfad780458344d",
-        "RIGHTS.md": "8ed21cab21cc5b5771545f9be0fb32e15e487e661a90a57ab68ee94f0fb94b56",
+        "RIGHTS.md": "4038fde9c7a49ecc9d7d9b2295dc8a79fa3d3c984d54f136b35456c5cb880e6f",
     },
     "chips": {"train": 32, "validation": 8},
     "keys_used": ["S2", "S2_valid", "label"],
@@ -623,7 +623,7 @@ TROUBLE = r"""## Troubleshooting
 
 LICENCES = r"""## Data, model, attribution and licences
 
-**Data:** `kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching`, version 1 (public, CC BY 4.0), verified by `INDEX.jsonl` SHA-256 `e92bbb9f20d1f7efb225d568e2a44a6ae3d59faab9079590e2dfad780458344d` and every chip's SHA-256. Component attribution, from the dataset's rights file:
+**Data:** `kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching`, version 2 (public, CC BY 4.0; its data files are identical to version 1), verified by `INDEX.jsonl` SHA-256 `e92bbb9f20d1f7efb225d568e2a44a6ae3d59faab9079590e2dfad780458344d` and every chip's SHA-256. Component attribution, from the dataset's rights file:
 
 - **Rice labels:** Chen et al., *20 m resolution maps of paddy rice cropping intensity and planting dates in Monsoon Asia from 2018 to 2021* (Chen et al., 2025), https://doi.org/10.5281/zenodo.15124936, CC BY 4.0 — reprojected, converted to binary and given an ignored edge band.
 - **Optical inputs:** Contains modified Copernicus Sentinel data 2019–2021 (cloud/quality masking, six-band selection, 20 m resampling, 24 annual median bins), under the Copernicus Sentinel data terms.

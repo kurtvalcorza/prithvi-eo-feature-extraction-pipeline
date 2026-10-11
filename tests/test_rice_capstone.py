@@ -256,6 +256,23 @@ def test_byod_collection_starts_clean_and_refuses_duplicates_unsafe_and_oversize
         cap.collect_byod([big], target)
 
 
+def test_a_rejected_byod_rerun_leaves_no_earlier_outputs_behind(tmp_path, monkeypatch):
+    # Codex P2 on 2d43f2e: cleanup ran after validation, so a malformed re-upload left the previous predictions and
+    # byod_results.zip in place as though they belonged to the rejected attempt.
+    ctx = cap.Context(tmp_path)
+    (ctx.out / "byod" / "predictions").mkdir(parents=True)
+    (ctx.out / "byod" / "predictions" / "old_C.tif").write_bytes(b"old")
+    (ctx.out / "byod_results.zip").write_bytes(b"old")
+
+    def refuse(*_args, **_kwargs):
+        raise cap.ChipError("malformed upload")
+
+    monkeypatch.setattr(cap, "_torch_setup", refuse)  # fail as early as possible, before any validation
+    with pytest.raises(cap.ChipError, match="malformed"):
+        cap.stage_byod(ctx, [tmp_path / "nothing.h5"])
+    assert not (ctx.out / "byod").exists() and not (ctx.out / "byod_results.zip").exists()
+
+
 def test_metric_edge_cases_report_null_with_reasons():
     no_rice = np.zeros((4, 4), dtype=np.uint8)
     silent = cap.scores(cap.confusion(np.zeros((4, 4)), no_rice, 0.5))

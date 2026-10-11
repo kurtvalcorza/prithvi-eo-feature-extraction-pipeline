@@ -39,7 +39,7 @@ except ImportError:  # repository checkout (tests)
 # --------------------------------------------------------------------------------------------------
 
 DATASET_SLUG = "kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching"
-DATASET_VERSION = 1
+DATASET_VERSION = 2  # v2 (2026-10-11) changed only the card, RIGHTS.md and PACKAGE.sha256; data and INDEX equal v1
 INDEX_SHA256 = "e92bbb9f20d1f7efb225d568e2a44a6ae3d59faab9079590e2dfad780458344d"
 DATASET_LICENSE = "CC BY 4.0"
 DEVELOPMENT_EXAMPLE_GROUP = "ph_96_766"  # a parent training sample: never used for selection or scoring
@@ -113,7 +113,7 @@ ATTRIBUTION = (
     "AlphaEarth Foundations Satellite Embedding (Google / Google DeepMind; Brown et al., 2025), CC BY 4.0 - carried "
     "in the dataset files; not read or shown by this notebook.\n"
     "Administrative regions: geoBoundaries PHL ADM1, CC BY 3.0 IGO.\n"
-    "Dataset compilation: Kurt Valcorza, rice-philippines-s2-alphaearth-v1-teaching (Kaggle, version 1), CC BY 4.0.\n"
+    "Dataset compilation: Kurt Valcorza, rice-philippines-s2-alphaearth-v1-teaching (Kaggle, version 2), CC BY 4.0.\n"
     "Model: ibm-nasa-geospatial/Prithvi-EO-2.0-300M (Apache-2.0), revision " + pp.MODEL_REVISION + ".\n"
 )
 
@@ -1638,6 +1638,12 @@ def collect_byod(sources: Sequence[Path], target: Path) -> list[Path]:
 
 
 def stage_byod(ctx: Context, sources: Sequence[Path]) -> None:
+    out = ctx.out / "byod"
+    # Clear the previous attempt first: a rejected upload or a failed model load must never leave older predictions,
+    # an older adapter or an older byod_results.zip looking as if they belonged to this attempt.
+    if out.exists():
+        shutil.rmtree(out)
+    (ctx.out / "byod_results.zip").unlink(missing_ok=True)
     torch = _torch_setup()
     input_dir = ctx.root / "byod_input"
     files = collect_byod(sources, input_dir)
@@ -1657,9 +1663,6 @@ def stage_byod(ctx: Context, sources: Sequence[Path]) -> None:
     params, manifest = load_head(ctx.out / "head_adapter", expect={"base_revision": pp.MODEL_REVISION})
     pipe = load_prithvi(ctx)
     features, canonical, rows = {}, {}, []
-    out = ctx.out / "byod"
-    if out.exists():
-        shutil.rmtree(out)  # a re-run never leaves an earlier attempt's predictions or adapter beside the new ones
     for cid, chip in chips.items():
         frames = select_frames(chip["S2_valid"])
         x, fill = prithvi_input(chip, frames["bins"])
