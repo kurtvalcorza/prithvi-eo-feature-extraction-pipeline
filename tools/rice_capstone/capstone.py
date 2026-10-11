@@ -5,7 +5,7 @@ The notebook writes this file, the repository's verbatim `pipeline.py` (as `prit
 the manifests to a fresh run directory and runs each stage in a child process of the isolated environment:
 
     prepare -> baseline -> features -> train-head -> activity -> [finetune] -> evaluate -> export -> reload -> report
-    byod (optional, after export)
+    byod (optional, after reload)
 
 Everything above the stage functions is numpy-only and importable without torch, h5py, lightgbm or matplotlib, so the
 repository's CPU tests exercise the scoring and bookkeeping contract on synthetic arrays.
@@ -19,6 +19,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import sys
 import time
 import zipfile
@@ -98,6 +99,7 @@ ARTIFACT_MANIFEST = "manifest.json"
 HEAD_TENSORS = ("conv1.weight", "conv1.bias", "conv2.weight", "conv2.bias")
 RELOAD_TOLERANCE = 1e-4
 BYOD_MAX_FILES = 200
+BYOD_MAX_BYTES = 4 * 2**30  # expanded size of everything collected for one BYOD run
 BYOD_MIN_ADAPT_CHIPS = 6
 
 M1_STATS = ("mean", "std", "min", "max", "p10", "p50", "p90")
@@ -710,7 +712,7 @@ def download_dataset(cache: Path) -> Path:
 
     started = time.perf_counter()
     path = Path(kagglehub.dataset_download(f"{DATASET_SLUG}/versions/{DATASET_VERSION}"))
-    print(f"dataset downloaded anonymously in {time.perf_counter() - started:.1f} s: {path}", flush=True)
+    print(f"dataset resolved anonymously by kagglehub in {time.perf_counter() - started:.1f} s: {path}", flush=True)
     return path
 
 
@@ -1551,9 +1553,56 @@ def byod_split(ids: Sequence[str], groups: Mapping[str, str], rice: Mapping[str,
     raise ChipError("no group assignment gives rice in fit, development and test; add more labelled sites")
 
 
-def stage_byod(ctx: Context, input_dir: Path) -> None:
+def collect_byod(sources: Sequence[Path], target: Path) -> list[Path]:
+    """Copy the .h5 chips named by `sources` (folders, .zip archives or .h5 files) into an emptied `target`. Refuses
+    unsafe or oversized archives and two chips with the same file name before anything is copied, so a re-run never
+    mixes in an earlier attempt and one chip never silently replaces another."""
+    plan: dict[str, tuple[Path, str | None]] = {}
+    total = 0
+
+    def add(name: str, origin: Path, member: str | None, size: int) -> None:
+        nonlocal total
+        if name in plan:
+            first = plan[name][0] if plan[name][1] is None else f"{plan[name][0]}:{plan[name][1]}"
+            second = origin if member is None else f"{origin}:{member}"
+            raise ChipError(f"two chips share the file name {name}: {first} and {second}; "
+                            "rename one so each chip-year has a unique name")
+        plan[name] = (origin, member)
+        total += size
+
+    for source in sources:
+        if source.is_dir():
+            for path in sorted(source.rglob("*.h5")):
+                add(path.name, path, None, path.stat().st_size)
+        elif source.suffix == ".zip":
+            with zipfile.ZipFile(source) as archive:
+                for info in archive.infolist():
+                    if info.filename.startswith("/") or ".." in Path(info.filename).parts:
+                        raise ChipError(f"{source.name}: unsafe member name {info.filename!r} (absolute or '..'); refused")
+                    if info.filename.endswith(".h5"):
+                        add(Path(info.filename).name, source, info.filename, info.file_size)
+        elif source.suffix == ".h5":
+            add(source.name, source, None, source.stat().st_size)
+        else:
+            raise ChipError(f"{source}: expected a folder, a .zip or .h5 files")
+        if len(plan) > BYOD_MAX_FILES or total > BYOD_MAX_BYTES:
+            raise ChipError(f"the input exceeds {BYOD_MAX_FILES} chips or {BYOD_MAX_BYTES // 2**30} GiB; send fewer files")
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True)
+    for name, (origin, member) in plan.items():
+        if member is None:
+            shutil.copy2(origin, target / name)
+        else:
+            with zipfile.ZipFile(origin) as archive:
+                (target / name).write_bytes(archive.read(member))
+    return sorted(target.glob("*.h5"))
+
+
+def stage_byod(ctx: Context, sources: Sequence[Path]) -> None:
     torch = _torch_setup()
-    files = sorted(input_dir.rglob("*.h5"))
+    input_dir = ctx.root / "byod_input"
+    files = collect_byod(sources, input_dir)
     if not files:
         raise ChipError(f"no .h5 chips found under {input_dir}; see the schema in the BYOD section")
     if len(files) > BYOD_MAX_FILES:
@@ -1571,6 +1620,8 @@ def stage_byod(ctx: Context, input_dir: Path) -> None:
     pipe = load_prithvi(ctx)
     features, rows = {}, []
     out = ctx.out / "byod"
+    if out.exists():
+        shutil.rmtree(out)  # a re-run never leaves an earlier attempt's predictions or adapter beside the new ones
     for cid, chip in chips.items():
         frames = select_frames(chip["S2_valid"])
         x, fill = prithvi_input(chip, frames["bins"])
@@ -1583,7 +1634,10 @@ def stage_byod(ctx: Context, input_dir: Path) -> None:
                       y_max=chip["attrs"].get("y_max"))
         row = {"chip": cid, "bins": " ".join(map(str, frames["bins"])), "filled_fraction": fill["filled_fraction"],
                "predicted_rice_fraction": float((p >= manifest["threshold"]).mean()),
-               "georeferenced": bool(chip["attrs"])}
+               "georeferenced": "x_min" in chip["attrs"] and "y_max" in chip["attrs"]}
+        if not row["georeferenced"]:
+            print(f"{cid}: not georeferenced (no x_min/y_max, and no affine that is EPSG:32651, 20 m and north-up); "
+                  "its GeoTIFF has no location", flush=True)
         if chip["label"] is not None:
             row.update(scores(confusion(p, chip["label"], manifest["threshold"])))
         rows.append(row)
@@ -1624,6 +1678,9 @@ def stage_byod(ctx: Context, input_dir: Path) -> None:
     else:
         summary["adaptation"] = f"not run: needs at least {BYOD_MIN_ADAPT_CHIPS} labelled chips"
     write_json(out / "byod_summary.json", summary)
+    bundle = ctx.out / "byod_results.zip"
+    build_zip(bundle, out, out.rglob("*"))
+    verify_zip(bundle)
     ctx.receipt("byod", chips=len(chips))
 
 
@@ -1639,7 +1696,7 @@ STAGES: dict[str, Callable[[Context], None]] = {
 PREREQUISITES: dict[str, tuple[str, ...]] = {
     "baseline": ("prepare",), "features": ("prepare",), "train-head": ("baseline", "features"),
     "activity": ("train-head",), "finetune": ("train-head",), "evaluate": ("baseline", "train-head", "activity"),
-    "export": ("evaluate",), "reload": ("export",), "report": ("reload",), "byod": ("train-head",),
+    "export": ("evaluate",), "reload": ("export",), "report": ("reload",), "byod": ("reload",),
 }
 
 
@@ -1659,7 +1716,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--stage", choices=[*STAGES, "byod"], required=True)
-    parser.add_argument("--input", type=Path, default=None, help="BYOD directory of .h5 chips")
+    parser.add_argument("--input", type=Path, nargs="+", default=None, help="BYOD folders, .zip archives or .h5 files")
     args = parser.parse_args(argv)
     ctx = Context(args.root)
     start_stage(ctx, args.stage)

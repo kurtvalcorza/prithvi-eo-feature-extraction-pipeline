@@ -1,7 +1,7 @@
 # DIMER Philippines Rice Mapping Capstone — Specification
 
 Prepared: 2026-10-11.
-Status: Design only. Dataset files and checksums verified locally and on Kaggle; a Colab T4 compatibility smoke is recorded in §4. Notebook implementation, hosted Run all and qualification are not started.
+Status (as prepared 2026-10-11): design, with dataset files and checksums verified locally and on Kaggle and a Colab T4 compatibility smoke recorded in §4. The notebook has since been implemented and run on hosted T4; `docs/release-verification.md` holds its current status.
 
 ## 1. Learning artifact and scope
 

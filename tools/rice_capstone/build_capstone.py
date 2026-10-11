@@ -155,7 +155,7 @@ By the end of this notebook you will be able to:
 | 11 | Conclude with evidence | Evaluation practice |
 | 12 | Optional: bring your own chips | Engineering |
 
-**Evidence boundary.** 40 chip-years: 32 for training, 8 for validation, all validation chips from two regions (Central and Eastern Visayas). This is a teaching comparison, not a national accuracy estimate, and it is Candidate until a hosted run of this exact notebook is recorded."""
+**Evidence boundary.** 40 chip-years: 32 for training, 8 for validation, all validation chips from two regions (Central and Eastern Visayas). This is a teaching comparison, not a national accuracy estimate, and it stays Candidate until a browser Run all of this exact notebook, including the upload dialog, is recorded."""
 
 GLOSSARY = r"""<details>
 <summary><strong>Glossary</strong> — open when a term is unfamiliar</summary>
@@ -527,7 +527,7 @@ AFTER_FIGURES = r"""**Interpret:** pick one chip where B and C disagree. Is the 
 <details>
 <summary>Check your reasoning (open after answering)</summary>
 
-C's errors tend to sit in bands along field boundaries and fill small gaps between fields, because each decision starts from a 320 m patch and is smoothed by upsampling; B decides per 20 m pixel but sees no spatial context, so its errors are more speckled. A pooled F1 difference of a few hundredths on eight clustered chips is within what a different chip selection could reverse, so the defensible sentence names the chips, the systems and the numbers, then says what the sample cannot establish. If B beats C, report it: the hand-built baseline is a real competitor, and a foundation model is not required to win.
+Read the maps rather than assuming a pattern. Two things to look for: C decides from 320 m patches that are then smoothed, so check whether its misses are whole fields (low recall) or edges; B decides per 20 m pixel without spatial context, so check whether its errors are speckled. Compare the pooled F1 gap with the per-chip table: if the gap comes from one or two chips, a different chip selection could change it; if most chips agree, it is more robust, though eight clustered chips from two regions still cannot establish a national ranking. The defensible sentence names the chips, the systems and the numbers, then says what the sample cannot establish. If B beats C, report it: the hand-built baseline is a real competitor, and a foundation model is not required to win.
 
 </details>"""
 
@@ -553,7 +553,7 @@ Complete the scaffold above in your own words. A strong conclusion states the ta
 <details>
 <summary>Check your reasoning: what makes a conclusion strong? (open after writing yours)</summary>
 
-Strong: "On the labelled pixels of eight validation chips in Central and Eastern Visayas, the frozen-Prithvi head reached pooled rice F1 *x* against *y* for the LightGBM baseline and 0 for all-non-rice; on development, four frames beat the best single quarter by *z*, consistent with rice being a seasonal signal. C's errors concentrate along field edges, consistent with its 320 m patches. With eight clustered chips and map-derived labels, this does not establish which approach is better nationally; next we would score a larger, spatially separated test set." Weak: "Prithvi is better at mapping rice" from one pooled number.
+Strong: "On the labelled pixels of eight validation chips in Central and Eastern Visayas, the frozen-Prithvi head reached pooled rice F1 *x* against *y* for the LightGBM baseline and 0 for all-non-rice; on development, four frames beat the best single quarter by *z*, consistent with rice being a seasonal signal. The error maps show [where C and B differ: whole fields, edges or cloud-filled areas]. With eight clustered chips and map-derived labels, this does not establish which approach is better nationally; next we would score a larger, spatially separated test set." Weak: "Prithvi is better at mapping rice" from one pooled number.
 
 </details>
 
@@ -570,9 +570,9 @@ Switched off by default, so Run all never waits for an upload. Tick `USE_BYOD`, 
 | `S2` | float32 `[24, 6, 128, 128]`: 24 equal calendar bins × bands B2, B3, B4, B8A, B11, B12 in that order; surface reflectance (digital number × 0.0001); NaN allowed where `S2_valid` = 0 |
 | `S2_valid` | 0/1 `[24, 128, 128]` |
 | `label` | uint8 `[128, 128]`: 0 non-rice, 1 rice, 255 ignore — needed for scoring and adaptation; optional for prediction only |
-| attributes (optional) | `x_min`, `y_max` (EPSG:32651 metres) georeference the GeoTIFFs; `group` names the site (default: the file name without a trailing `_YYYY`) |
+| attributes (optional) | Location, either this dataset's `affine` (JSON `[a, b, c, d, e, f]`) with `crs` = `EPSG:32651`, used only for a 20 m north-up grid, or plain `x_min`, `y_max` (EPSG:32651 metres, upper-left corner); a chip without a usable location is still scored, its GeoTIFF has no location and the notebook says so. Site: `group_id` or `group` (default: the file name without a trailing `_YYYY`) |
 
-One `.h5` file per chip-year, at most 200 files. Values above 2.0 mean the file stores reflectance × 10,000; it is refused, not rescaled. Other keys (AlphaEarth, `label_raw`) are ignored.
+One `.h5` file per chip-year with a unique file name, at most 200 files and 4 GiB in total; a `.zip` with an absolute or `..` member is refused. Values above 2.0 mean the file stores reflectance × 10,000; it is refused, not rescaled. Other keys (AlphaEarth, `label_raw`) are ignored.
 
 **What happens:** every file is validated with the same rules as the sample data (a failure names the file and the broken rule); every chip is scored with the exported head at its frozen threshold (GeoTIFFs and, if labelled, per-chip metrics). With at least 6 labelled chips from at least three sites, the notebook also adapts a new head under the same protocol: sites are split into fit, development and test by a declared hash rule, the epoch and threshold are chosen on development, the test sites are scored against the all-non-rice baseline, and the adapted head is exported and reloaded from files.
 
@@ -581,28 +581,16 @@ One `.h5` file per chip-year, at most 200 files. Values above 2.0 mean the file 
 CELL_BYOD = r"""USE_BYOD = False  # @param {type:"boolean"}
 BYOD_PATH = ''  # @param {type:"string"}
 if USE_BYOD:
-    target = ROOT / 'byod_input'
-    target.mkdir(exist_ok=True)
     sources = [Path(BYOD_PATH)] if BYOD_PATH else []
     if not sources:
         from google.colab import files  # only on Colab, only after the sample path has completed
-        sources = [Path(name) for name in files.upload()]
-    for source in sources:
-        if source.is_dir():
-            for path in source.rglob('*.h5'):
-                shutil.copy2(path, target / path.name)
-        elif source.suffix == '.zip':
-            with zipfile.ZipFile(source) as archive:
-                for name in archive.namelist():
-                    if name.endswith('.h5') and not name.startswith('/') and '..' not in Path(name).parts:
-                        (target / Path(name).name).write_bytes(archive.read(name))
-        elif source.suffix == '.h5':
-            shutil.copy2(source, target / source.name)
-        else:
-            raise ValueError(f'{source}: expected a folder, a .zip or .h5 files')
-    run_stage('byod', '--input', str(target))
+        sources = [Path(name).resolve() for name in files.upload()]
+    # The stage empties its input folder and its outputs first, refuses unsafe archives and duplicate file names,
+    # validates every chip, then scores, adapts, exports and bundles byod_results.zip.
+    run_stage('byod', '--input', *[str(source) for source in sources])
     show_table('byod/byod_canonical_head.csv')
     print(json.dumps(json.loads((ROOT / 'outputs' / 'byod' / 'byod_summary.json').read_text()), indent=1)[:4000])
+    display(FileLink(str(ROOT / 'outputs' / 'byod_results.zip')))
 else:
     print('BYOD not run (USE_BYOD = False).')"""
 
@@ -654,7 +642,7 @@ Szwarcman, D., Roy, S., Fraccaro, P., Gíslason, Þ. E., Blumenstiel, B., Ghosal
 
 Xiao, X., Boles, S., Liu, J., Zhuang, D., Frolking, S., Li, C., Salas, W., & Moore, B. (2005). Mapping paddy rice agriculture in southern China using multi-temporal MODIS images. *Remote Sensing of Environment, 95*(4), 480–492. https://doi.org/10.1016/j.rse.2004.12.009
 
-**Data and software sources:** [Teaching dataset on Kaggle](https://www.kaggle.com/datasets/kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching) · [Prithvi-EO-2.0-300M model card](https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-2.0-300M) · [Host repository](https://github.com/kurtvalcorza/prithvi-eo-feature-extraction-pipeline) · [DIMER Notebook Specification](https://github.com/kurtvalcorza/ml-worker/blob/main/integrations/dimer/fleet-specs/NOTEBOOK_SPEC.md) · [Reference capstone](https://github.com/kurtvalcorza/prithvi-flood-segmentation-pipeline/blob/main/tutorials/DIMER_Philippines_Flood_Mapping_Capstone.ipynb)"""
+**Data and software sources:** [Teaching dataset on Kaggle](https://www.kaggle.com/datasets/kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching) · [Prithvi-EO-2.0-300M model card](https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-2.0-300M) · [Host repository](https://github.com/kurtvalcorza/prithvi-eo-feature-extraction-pipeline) · DIMER Notebook Specification 2.3 (maintained in the DIMER fleet specifications) · [Reference capstone](https://github.com/kurtvalcorza/prithvi-flood-segmentation-pipeline/blob/main/tutorials/DIMER_Philippines_Flood_Mapping_Capstone.ipynb)"""
 
 INFRA = {"cellView": "form", "jupyter": {"source_hidden": True}}
 

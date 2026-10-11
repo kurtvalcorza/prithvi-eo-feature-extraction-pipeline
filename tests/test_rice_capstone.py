@@ -163,6 +163,39 @@ def test_stages_refuse_to_start_before_their_prerequisites_and_clear_stale_recei
     cap.start_stage(ctx, "prepare")  # a fresh prepare invalidates every downstream receipt
     assert not list(receipts.glob("*.json"))
     assert set(cap.PREREQUISITES) == (set(cap.STAGES) - {"prepare"}) | {"byod"}
+    assert cap.PREREQUISITES["byod"] == ("reload",)  # BYOD loads the exported head_adapter, verified by reload
+
+
+def test_byod_collection_starts_clean_and_refuses_duplicates_unsafe_and_oversized_input(tmp_path, monkeypatch):
+    import zipfile
+
+    site_a, site_b, target = tmp_path / "a", tmp_path / "b", tmp_path / "byod_input"
+    site_a.mkdir()
+    site_b.mkdir()
+    (site_a / "x_2020.h5").write_bytes(b"a")
+    (site_b / "y_2021.h5").write_bytes(b"b")
+    target.mkdir()
+    (target / "stale_2019.h5").write_bytes(b"old")  # left by an earlier attempt
+    assert [p.name for p in cap.collect_byod([site_a, site_b], target)] == ["x_2020.h5", "y_2021.h5"]
+    archive = tmp_path / "chips.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("nested/z_2020.h5", b"z")
+    assert [p.name for p in cap.collect_byod([archive], target)] == ["z_2020.h5"]  # the re-run replaced, not merged
+    (site_b / "x_2020.h5").write_bytes(b"other site")
+    with pytest.raises(cap.ChipError, match="share the file name x_2020.h5"):
+        cap.collect_byod([site_a, site_b], target)
+    assert [p.name for p in target.glob("*.h5")] == ["z_2020.h5"]  # a refusal copies nothing
+    unsafe = tmp_path / "unsafe.zip"
+    with zipfile.ZipFile(unsafe, "w") as handle:
+        handle.writestr("../escape_2020.h5", b"e")
+    with pytest.raises(cap.ChipError, match="unsafe member"):
+        cap.collect_byod([unsafe], target)
+    (site_b / "x_2020.h5").unlink()
+    monkeypatch.setattr(cap, "BYOD_MAX_FILES", 1)
+    with pytest.raises(cap.ChipError, match="exceeds 1 chips"):
+        cap.collect_byod([site_a, site_b], target)
+    with pytest.raises(cap.ChipError, match="expected a folder"):
+        cap.collect_byod([tmp_path / "notes.txt"], target)
 
 
 def test_metric_edge_cases_report_null_with_reasons():
@@ -426,6 +459,8 @@ def test_notebook_schema_metadata_and_output_free_cells_compile():
         if cell["cell_type"] == "code":
             assert cell["outputs"] == [] and cell["execution_count"] is None
             compile(_source(cell), cell["id"], "exec")
+            # A single huge carrier line froze Colab's editor (layoutlm #10); the flood capstone guards the same way.
+            assert max(map(len, _source(cell).splitlines())) <= 2000, cell["id"]
             first = _source(cell).splitlines()[0]
             if first.startswith("# @title Infrastructure"):
                 assert cell["metadata"]["cellView"] == "form"
