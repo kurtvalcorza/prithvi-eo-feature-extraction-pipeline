@@ -107,7 +107,7 @@ def carrier_cell(files: dict[str, str]) -> str:
 
 TITLE = r"""# Rice From Space: What Does a Satellite Foundation Model Add?
 
-**DIMER Philippines Rice Mapping Capstone** · **Profile:** `E2E` · **Mode:** `WORKSHOP` · **Notebook standard:** DIMER Notebook Specification `2.3` · **Release status:** Candidate · **Model:** `ibm-nasa-geospatial/Prithvi-EO-2.0-300M` @ `9eb1b1102806` · **Data:** Kaggle `kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching`, version 1
+**DIMER Philippines Rice Mapping Capstone** · **Profile:** `E2E` · **Mode:** `WORKSHOP` · **Notebook standard:** DIMER Notebook Specification `2.3` · **Release status:** Candidate · **Model:** `ibm-nasa-geospatial/Prithvi-EO-2.0-300M` @ `9eb1b1102806` · **Data:** Kaggle `kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching`, version 2
 
 **Driving question:** Given 32 labelled Sentinel-2 chips, does a head trained on frozen Prithvi-EO-2.0 features map Philippine rice better than a hand-built spectral-temporal baseline, and what can 8 validation chips actually establish?
 

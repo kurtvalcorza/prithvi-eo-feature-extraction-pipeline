@@ -232,7 +232,8 @@ def test_byod_collection_starts_clean_and_refuses_duplicates_unsafe_and_oversize
     (site_b / "x_2020.h5").write_bytes(b"other site")
     with pytest.raises(cap.ChipError, match="share the file name x_2020.h5"):
         cap.collect_byod([site_a, site_b], target)
-    assert [p.name for p in target.glob("*.h5")] == ["z_2020.h5"]  # a refusal copies nothing
+    # Codex P2 on 4787f32: a rejected retry must not keep the earlier upload either; it copies nothing.
+    assert list(target.glob("*.h5")) == []
     unsafe = tmp_path / "unsafe.zip"
     with zipfile.ZipFile(unsafe, "w") as handle:
         handle.writestr("../escape_2020.h5", b"e")
@@ -271,6 +272,20 @@ def test_a_rejected_byod_rerun_leaves_no_earlier_outputs_behind(tmp_path, monkey
     with pytest.raises(cap.ChipError, match="malformed"):
         cap.stage_byod(ctx, [tmp_path / "nothing.h5"])
     assert not (ctx.out / "byod").exists() and not (ctx.out / "byod_results.zip").exists()
+
+
+def test_the_bundled_verification_record_equals_the_displayed_one(tmp_path):
+    # Codex P2 on 4787f32: results.zip was built before results_zip was written into verification.json.
+    import zipfile
+
+    ctx = cap.Context(tmp_path)
+    cap.write_json(ctx.out / "verification.json", {"binary_decisions_identical": True})
+    (ctx.out / "metrics.csv").write_text("system,f1\nB,0.75\n")
+    check = cap.bundle_results(ctx)
+    shown = cap.read_json(ctx.out / "verification.json")
+    assert shown["results_zip"] == check and check["verified"] is True
+    with zipfile.ZipFile(ctx.out / "results.zip") as archive:
+        assert json.loads(archive.read("verification.json")) == shown
 
 
 def test_metric_edge_cases_report_null_with_reasons():

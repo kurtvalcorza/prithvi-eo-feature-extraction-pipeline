@@ -1545,13 +1545,30 @@ def stage_report(ctx: Context) -> None:
         "stages": receipts, "selection_thresholds": {k: v.get("threshold") for k, v in selection.items() if isinstance(v, dict)},
         "evidence_boundary": "teaching scale: 32 training and 8 validation chips; no national or operational claim",
     })
-    members = [p for p in ctx.out.rglob("*") if p.is_file() and p.name != "results.zip"]
-    build_zip(ctx.out / "results.zip", ctx.out, members)
-    check = verify_zip(ctx.out / "results.zip")
-    verification = read_json(ctx.out / "verification.json")
-    verification["results_zip"] = check
-    write_json(ctx.out / "verification.json", verification)
+    check = bundle_results(ctx)
     ctx.receipt("report", zip_members=check["members"])
+
+
+def bundle_results(ctx: Context) -> dict[str, Any]:
+    """Build results.zip so that the verification.json inside it is the record the notebook displays: a first build
+    measures the bundle, its check is written into verification.json, and the bundle is rebuilt and verified again
+    with that final record inside. The two checks must agree."""
+    def build() -> dict[str, Any]:
+        members = [p for p in ctx.out.rglob("*") if p.is_file() and p.name != "results.zip"]
+        build_zip(ctx.out / "results.zip", ctx.out, members)
+        return verify_zip(ctx.out / "results.zip")
+
+    verification_path = ctx.out / "verification.json"
+    verification = read_json(verification_path)
+    verification["results_zip"] = build()
+    write_json(verification_path, verification)
+    final = build()
+    if final != verification["results_zip"]:
+        raise RuntimeError(f"results.zip changed between builds: {verification['results_zip']} != {final}")
+    with zipfile.ZipFile(ctx.out / "results.zip") as archive:
+        if json.loads(archive.read("verification.json")) != verification:
+            raise RuntimeError("the bundled verification.json differs from the displayed record")
+    return final
 
 
 # ---- BYOD -------------------------------------------------------------------------------------------
@@ -1587,9 +1604,12 @@ def byod_split(ids: Sequence[str], groups: Mapping[str, str], rice: Mapping[str,
 
 
 def collect_byod(sources: Sequence[Path], target: Path) -> list[Path]:
-    """Copy the .h5 chips named by `sources` (folders, .zip archives or .h5 files) into an emptied `target`. Refuses
-    unsafe or oversized archives and two chips with the same file name before anything is copied, so a re-run never
-    mixes in an earlier attempt and one chip never silently replaces another."""
+    """Copy the .h5 chips named by `sources` (folders, .zip archives or .h5 files) into an emptied `target`. The folder
+    is emptied first, so even a rejected retry keeps nothing from an earlier upload; unsafe or oversized archives and
+    two chips with the same file name are refused before anything is copied."""
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True)
     plan: dict[str, tuple[Path, str | None]] = {}
     total = 0
 
@@ -1620,9 +1640,6 @@ def collect_byod(sources: Sequence[Path], target: Path) -> list[Path]:
             raise ChipError(f"{source}: expected a folder, a .zip or .h5 files")
         if len(plan) > BYOD_MAX_FILES or total > BYOD_MAX_BYTES:
             raise ChipError(f"the input exceeds {BYOD_MAX_FILES} chips or {BYOD_MAX_BYTES // 2**30} GiB; send fewer files")
-    if target.exists():
-        shutil.rmtree(target)
-    target.mkdir(parents=True)
     for name, (origin, member) in plan.items():
         if member is None:
             shutil.copy2(origin, target / name)
