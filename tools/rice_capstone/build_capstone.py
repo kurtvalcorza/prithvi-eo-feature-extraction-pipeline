@@ -177,6 +177,11 @@ GLOSSARY = r"""<details>
 | **TP / FP / FN / TN** | Rice found / non-rice called rice / rice missed / non-rice correctly left. |
 | **Precision / recall / F1 / IoU** | TP/(TP+FP) / TP/(TP+FN) / 2TP/(2TP+FP+FN) / TP/(TP+FP+FN). |
 | **Pooled** | Counts summed over all scored pixels of all chips before computing a ratio. |
+| **Epoch** | One pass of training over all fit chips; more epochs fit the fit chips more closely, which can stop helping on new chips. |
+| **Loss (cross-entropy)** | The number training lowers: small when the head gives high rice scores to rice pixels and low ones to non-rice. |
+| **Early stopping** | Keeping the epoch (or boosting round) where the development score was best instead of the last one. |
+| **LightGBM / gradient boosting** | A fast method that adds many small decision trees, each correcting the previous ones; baseline B uses it on per-pixel features. |
+| **Transformer encoder** | Prithvi's network: layers (blocks) that let every patch token exchange information with every other before the next block. |
 
 </details>"""
 
@@ -288,6 +293,8 @@ from IPython.display import FileLink, Image, Markdown, display
 def _cell(value):
     if value is None or value == '':
         return 'undefined'
+    if isinstance(value, bool) or value in ('True', 'False'):
+        return str(value).lower()
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -410,7 +417,7 @@ AFTER_BASELINE = r"""**What to notice:** A's accuracy equals the share of non-ri
 <details>
 <summary>Check your reasoning (open after answering)</summary>
 
-If roughly 80 % of development pixels are non-rice, A scores about 0.8 accuracy without finding a single paddy — which is why the comparison is read in F1 and IoU. B's threshold is a real choice made on development only; its development F1 is therefore optimistic for B and is not a held-out score. The threshold is now frozen.
+If about nine in ten development pixels are non-rice, A scores about 0.9 accuracy without finding a single paddy — which is why the comparison is read in F1 and IoU. B's threshold is a real choice made on development only; its development F1 is therefore optimistic for B and is not a held-out score. The threshold is now frozen.
 
 </details>"""
 
@@ -475,7 +482,7 @@ CELL_ACTIVITY = r"""run_stage('activity')
 show_table('activity.csv', ['variant', 'epochs', 'threshold', 'f1', 'iou', 'precision', 'recall'])
 show_figures('activity_*')"""
 
-AFTER_ACTIVITY = r"""**Observe and explain:** compare the best single quarter with T = 4. The T = 4 row reproduces C's development result exactly (same recipe, seed and epochs), which shows the procedure is unchanged; each T = 1 row is a head trained with the same recipe on one-frame features, so the comparison asks how much information one frame carries, not how C copes with fewer frames.
+AFTER_ACTIVITY = r"""**Observe and explain:** compare the best single quarter with T = 4. The T = 4 row reproduces C's development result exactly (same recipe, seed and epochs), which shows the procedure is unchanged; each T = 1 row is a head trained with the same recipe on one-frame features, so the comparison asks how much information one frame carries, not how C copes with fewer frames. One caveat: the epoch count and threshold were chosen for T = 4 on the same development chips and the T = 1 heads borrow them, so T = 4 has a head start; part of the gap comes from that tuning, and the direction of the result is more robust than its size.
 
 <details>
 <summary>Check your reasoning (open after answering)</summary>
@@ -486,9 +493,11 @@ Usually T = 4 beats every single quarter, and the best quarter is one that catch
 
 SEC7 = r"""## 7. Optional extension: fine-tune the encoder (C-FT) · [Evaluation practice]
 
-Switched off by default. When `RUN_FINETUNE` is ticked, a separate system **C-FT** unfreezes the patch embedding and encoder blocks 1–12 (the blocks that feed block 12; blocks 13–24 and the decoder stay frozen) and trains them with a fresh head under the same fit/development protocol: AdamW (encoder 0.00001, head 0.001), batch 4, 10 epochs fixed in advance, fp16 mixed precision, epoch and threshold chosen on development. Its validation predictions are computed without labels at the selected epoch and stay sealed; C-FT is scored in Section 8 only because it was selected **before** validation scoring. If you tick it after Section 8 has run, the stage refuses: a model chosen after seeing validation results would be exploratory. The run records its peak GPU memory with the full AdamW state; a feasibility check measured 2.69 GiB for the unfrozen backward pass at batch 4 without optimizer state. The canonical comparison and the exported artifact remain the frozen-encoder system C.
+Switched off by default. When `RUN_FINETUNE` is ticked, a separate system **C-FT** unfreezes the patch embedding, the CLS token and encoder blocks 1–12 (the blocks that feed block 12; blocks 13–24 and the decoder stay frozen) and trains them with a fresh head under the same fit/development protocol: AdamW (encoder 0.00001, head 0.001), batch 4, 10 epochs fixed in advance, fp16 mixed precision, epoch and threshold chosen on development. Its validation predictions are computed without labels at the selected epoch and stay sealed; C-FT is scored in Section 8 only because it was selected **before** validation scoring. If you tick it after Section 8 has run, the stage refuses: a model chosen after seeing validation results would be exploratory. The run records its peak GPU memory with the full AdamW state. For scale, recorded Colab CLI runs of an earlier blob of this notebook on a Tesla T4 (2026-10-11, recorded in `docs/release-verification.md`) measured a 4.40 GiB peak for this stage. The canonical comparison and the exported artifact remain the frozen-encoder system C.
 
-To use it: tick the box, then Runtime → Run all on a fresh runtime."""
+To use it: tick the box, then Runtime → Run all on a fresh runtime.
+
+**Expected result / What to notice:** a fine-tune curve with development loss and F1 per epoch and a record naming the selected epoch, threshold and peak GPU memory; in Section 8 a fourth validation row, C-FT. Fine-tuning far more parameters on 24 fit chips can overfit, so C-FT may score below C; that is a result, not an error. Some PyTorch operations it uses are non-deterministic, so its numbers can vary slightly between runs."""
 
 CELL_FINETUNE = r"""RUN_FINETUNE = False  # @param {type:"boolean"}
 if RUN_FINETUNE:
@@ -575,6 +584,8 @@ Switched off by default, so Run all never waits for an upload. Tick `USE_BYOD`, 
 One `.h5` file per chip-year with a unique file name, at most 200 files and 4 GiB in total; a `.zip` with an absolute or `..` member is refused. Values above 2.0 mean the file stores reflectance × 10,000; it is refused, not rescaled. Other keys (AlphaEarth, `label_raw`) are ignored.
 
 **What happens:** every file is validated with the same rules as the sample data (a failure names the file and the broken rule); every chip is scored with the exported head at its frozen threshold (GeoTIFFs and, if labelled, per-chip metrics). With at least 6 labelled chips from at least three sites, the notebook also adapts a new head under the same protocol: sites are split into fit, development and test by a declared hash rule, the epoch and threshold are chosen on development, the test sites are scored against the all-non-rice baseline, and the adapted head is exported and reloaded from files.
+
+**Expected result / What to notice:** a per-chip table (bins, filled share, predicted rice share, whether the GeoTIFF is georeferenced and, for labelled chips, the scores) and a summary; with enough labelled sites, the adapted head's test result beside the all-non-rice baseline and the exported canonical head on the same test sites, so you can see whether adapting helped; and a download link for `byod_results.zip`. A refused file names the file and the broken rule.
 
 **Privacy:** your files stay in this runtime; nothing is sent to any other service. Do not upload confidential, restricted, licensed or personal data unless you are authorised to process it in Google Colab."""
 

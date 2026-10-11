@@ -164,28 +164,13 @@ def chip_id(row: Mapping[str, Any]) -> str:
 # chip schema (the BYOD contract is the dataset's own schema)
 # --------------------------------------------------------------------------------------------------
 
-CHIP_SCHEMA: dict[str, Any] = {
-    "format": "one HDF5 file per chip-year (.h5)",
-    "S2": f"float32 [{N_BINS}, {N_BANDS}, {CHIP}, {CHIP}]: 24 equal calendar bins x bands {', '.join(BAND_NAMES)}; "
-    "surface reflectance (digital number x 0.0001), NaN allowed where S2_valid = 0",
-    "S2_valid": f"0/1 [{N_BINS}, {CHIP}, {CHIP}]: 1 where the bin has a valid observation",
-    "label": f"uint8 [{CHIP}, {CHIP}]: 0 non-rice, 1 rice, 255 ignore (required for scoring and adaptation; optional "
-    "for prediction only)",
-    "optional attributes": "x_min, y_max (EPSG:32651 metres, upper-left corner) georeference the exported GeoTIFF; "
-    "group names the site (default: the file name without a trailing _YYYY) so a site's years stay in one role",
-    "value range": f"valid reflectance within [{REFLECTANCE_MIN}, {REFLECTANCE_MAX}]; larger values mean the file "
-    "stores reflectance x 10 000 and is refused, never silently rescaled",
-    "limits": f"at most {BYOD_MAX_FILES} files; adaptation needs at least {BYOD_MIN_ADAPT_CHIPS} labelled chips",
-    "ignored keys": "AlphaEarth, AE_valid, label_raw, granule_count (never read)",
-}
-
 
 class ChipError(ValueError):
-    """A chip does not satisfy CHIP_SCHEMA; the message names the failed contract."""
+    """A chip does not satisfy the BYOD schema stated in Section 12; the message names the failed rule."""
 
 
 def validate_chip(arrays: Mapping[str, Any], *, name: str = "chip", require_label: bool = True) -> dict[str, Any]:
-    """Check one chip against CHIP_SCHEMA and return a normalised copy: S2 float32 with NaN wherever S2_valid is 0,
+    """Check one chip against the BYOD schema and return a normalised copy: S2 float32 with NaN wherever S2_valid is 0,
     S2_valid uint8, label uint8 (or None). Raises ChipError with an actionable message."""
     for key in ("S2", "S2_valid"):
         if key not in arrays:
@@ -229,9 +214,9 @@ def validate_chip(arrays: Mapping[str, Any], *, name: str = "chip", require_labe
 
 def georeference_attrs(raw: Mapping[str, Any]) -> dict[str, Any]:
     """Upper-left x_min/y_max and the site group from HDF5 attributes. Accepts this dataset's own schema (`affine` as a
-    JSON list [a, b, c, d, e, f], `crs`, `group_id`) and the plain `x_min`/`y_max`/`group` form. Coordinates must be
-    finite; plain ones are refused with any CRS other than EPSG:32651, and an affine grid is used only when it is
-    EPSG:32651, 20 m and north-up. Anything else stays ungeoreferenced rather than mislocated."""
+    JSON list or numeric array [a, b, c, d, e, f], `crs`, `group_id`) and the plain `x_min`/`y_max`/`group` form.
+    Coordinates must be finite; plain ones are refused with any CRS other than EPSG:32651, and an affine grid is used
+    only when it is EPSG:32651, 20 m and north-up. Anything else stays ungeoreferenced rather than mislocated."""
 
     def text(value: Any) -> str:
         return value.decode("utf-8") if isinstance(value, bytes) else str(value)
@@ -247,7 +232,9 @@ def georeference_attrs(raw: Mapping[str, Any]) -> dict[str, Any]:
             attrs.update(x_min=x_min, y_max=y_max)
     if "affine" in raw and not attrs:
         try:
-            a, b, c, d, e, f = (float(v) for v in json.loads(text(raw["affine"])))
+            value = raw["affine"]
+            numbers = json.loads(text(value)) if isinstance(value, (str, bytes)) else list(value)
+            a, b, c, d, e, f = (float(v) for v in numbers)
         except (TypeError, ValueError):
             a = b = c = d = e = f = math.nan
         if crs == "EPSG:32651" and (a, b, d, e) == (20.0, 0.0, 0.0, -20.0) and math.isfinite(c) and math.isfinite(f):
@@ -1669,7 +1656,7 @@ def stage_byod(ctx: Context, sources: Sequence[Path]) -> None:
     selection = read_json(ctx.out / "selection.json")
     params, manifest = load_head(ctx.out / "head_adapter", expect={"base_revision": pp.MODEL_REVISION})
     pipe = load_prithvi(ctx)
-    features, rows = {}, []
+    features, canonical, rows = {}, {}, []
     out = ctx.out / "byod"
     if out.exists():
         shutil.rmtree(out)  # a re-run never leaves an earlier attempt's predictions or adapter beside the new ones
@@ -1678,6 +1665,7 @@ def stage_byod(ctx: Context, sources: Sequence[Path]) -> None:
         x, fill = prithvi_input(chip, frames["bins"])
         features[cid] = encode(pipe, x[None])[0]
         p = head_probabilities(torch, _load_head(torch, params), features[cid][None])[0]
+        canonical[cid] = p
         pred = (p >= manifest["threshold"]).astype(np.uint8)
         if chip["label"] is not None:
             pred = np.where(chip["label"] == IGNORE, IGNORE, pred).astype(np.uint8)
@@ -1723,6 +1711,8 @@ def stage_byod(ctx: Context, sources: Sequence[Path]) -> None:
             summary["adaptation"] = {
                 "split": split, "selected_epoch": select_epoch(curve), "threshold": sel["threshold"],
                 "test_all_non_rice": pooled([np.zeros_like(p) for p in test_probs], test_labels, 0.5),
+                "test_canonical_head": pooled([canonical[c] for c in split["test"]], test_labels,
+                                              manifest["threshold"]),
                 "test_adapted_head": pooled(list(test_probs), test_labels, sel["threshold"]),
                 "reload_max_abs_difference": float(np.abs(again - test_probs).max()),
                 "reload_binary_identical": bool(np.array_equal(again >= sel["threshold"], test_probs >= sel["threshold"])),
@@ -1770,6 +1760,10 @@ def start_stage(ctx: Context, stage: str) -> None:
     """Refuse to run `stage` until its prerequisite stages have completed, then clear its own receipt and those of
     all its dependents, which stay ineligible until the chain completes again."""
     receipts = ctx.work / "receipts"
+    if stage in ("evaluate", "finetune") and (ctx.work / "frozen.json").exists():
+        # refuse before touching any receipt, so a re-run of a scored directory never strands export/reload/report
+        raise RuntimeError(f"{stage}: validation was already scored in this run directory; scoring happens exactly "
+                           "once. Start a fresh runtime to change a development choice")
     missing = [name for name in PREREQUISITES.get(stage, ()) if not (receipts / f"{name}.json").exists()]
     if missing:
         raise RuntimeError(f"{stage} needs the {', '.join(missing)} stage(s) to complete first; run the cells in order")

@@ -198,6 +198,22 @@ def test_restarting_an_upstream_stage_invalidates_every_dependent_receipt(tmp_pa
     assert cap.dependents("report") == set() and "byod" not in cap.dependents("report")
 
 
+def test_a_second_scoring_is_refused_before_any_receipt_is_cleared(tmp_path):
+    # Notebook review RC-m2 at 764291c: re-running Section 8 cleared evaluate/export/reload/report receipts before the
+    # "already scored" refusal, stranding Sections 10-12 in that run directory.
+    ctx = cap.Context(tmp_path)
+    receipts = ctx.work / "receipts"
+    receipts.mkdir(parents=True, exist_ok=True)
+    done = ("prepare", "baseline", "features", "train-head", "activity", "evaluate", "export", "reload", "report")
+    for name in done:
+        (receipts / f"{name}.json").write_text("{}")
+    (ctx.work / "frozen.json").write_text("{}")
+    for stage in ("evaluate", "finetune"):
+        with pytest.raises(RuntimeError, match="already scored"):
+            cap.start_stage(ctx, stage)
+    assert sorted(p.stem for p in receipts.glob("*.json")) == sorted(done)
+
+
 def test_byod_collection_starts_clean_and_refuses_duplicates_unsafe_and_oversized_input(tmp_path, monkeypatch):
     import zipfile
 
@@ -379,6 +395,9 @@ def test_georeference_reads_the_datasets_own_affine_crs_and_group_id_attributes(
     assert cap.georeference_attrs({"x_min": float("nan"), "y_max": 2.0}) == {}
     assert cap.georeference_attrs({"x_min": 1.0, "y_max": 2.0, "crs": b"EPSG:32651"}) == {"x_min": 1.0, "y_max": 2.0}
     assert cap.georeference_attrs({**real, "affine": "[20.0, 0.0, NaN, 0.0, -20.0, 2.0]"}) == {"group": "ph_240_427"}
+    # Notebook review RC-S3: an affine stored as a numeric HDF5 attribute is read like the JSON form.
+    numeric = {**real, "affine": np.array([20.0, 0.0, 614400.0, 0.0, -20.0, 1095680.0])}
+    assert cap.georeference_attrs(numeric) == {"x_min": 614400.0, "y_max": 1095680.0, "group": "ph_240_427"}
 
 
 def test_hdf5_reader_refuses_an_oversized_declared_shape_before_reading_it(tmp_path):
