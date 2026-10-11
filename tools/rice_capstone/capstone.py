@@ -89,7 +89,8 @@ HEAD_CONFIG: dict[str, Any] = {
     "epoch_rule": "highest development rice F1 at threshold 0.5; earliest epoch on ties",
 }
 FT_CONFIG: dict[str, Any] = {
-    "trainable": "patch_embed + encoder blocks 1-12 (the blocks feeding block 12); blocks 13-24 and the decoder frozen",
+    "trainable": "patch_embed + cls_token + encoder blocks 1-12 (the blocks feeding block 12); blocks 13-24 and the "
+                 "decoder frozen",
     "optimizer": "AdamW", "encoder_learning_rate": 1e-5, "head_learning_rate": 1e-3, "weight_decay": 0.01,
     "batch_size": 4, "epochs": 10, "seed": SEED, "precision": "fp16 autocast + GradScaler",
     "epoch_rule": "highest development rice F1 at threshold 0.5; earliest epoch on ties",
@@ -1572,7 +1573,9 @@ def bundle_results(ctx: Context) -> dict[str, Any]:
     measures the bundle, its check is written into verification.json, and the bundle is rebuilt and verified again
     with that final record inside. The two checks must agree."""
     def build() -> dict[str, Any]:
-        members = [p for p in ctx.out.rglob("*") if p.is_file() and p.name != "results.zip"]
+        byod = ctx.out / "byod"
+        members = [p for p in ctx.out.rglob("*") if p.is_file() and p.name not in ("results.zip", "byod_results.zip")
+                   and byod not in p.parents]  # BYOD results have their own bundle; the canonical one is the sample run
         build_zip(ctx.out / "results.zip", ctx.out, members)
         return verify_zip(ctx.out / "results.zip")
 
@@ -1803,6 +1806,16 @@ PREREQUISITES: dict[str, tuple[str, ...]] = {
 }
 
 
+# Outputs each finishing stage writes under outputs/. They are removed when the stage (or one it depends on) starts,
+# so a failed re-run of export, reload or report can never leave an earlier adapter, prediction set, verification
+# record or results bundle beside, or mixed with, newly written files.
+STAGE_OUTPUTS: dict[str, tuple[str, ...]] = {
+    "export": ("head_adapter", "predictions"),
+    "reload": ("verification.json",),
+    "report": ("results.zip", "run_summary.json", "conclusion.md"),
+}
+
+
 def ancestors(stage: str) -> set[str]:
     """Every stage that `stage` needs, directly or through another stage."""
     found: set[str] = set()
@@ -1842,6 +1855,12 @@ def start_stage(ctx: Context, stage: str) -> None:
         raise RuntimeError(f"{stage} needs the {', '.join(missing)} stage(s) to complete first; run the cells in order")
     for name in {stage} | dependents(stage):
         (receipts / f"{name}.json").unlink(missing_ok=True)
+        for relative in STAGE_OUTPUTS.get(name, ()):  # a failed re-run must not leave the previous outputs behind
+            path = ctx.out / relative
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

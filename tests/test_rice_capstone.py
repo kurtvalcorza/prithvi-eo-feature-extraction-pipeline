@@ -349,6 +349,37 @@ def test_round_codex_6300e3b_findings(tmp_path):
         cap.collect_byod([good], tmp_path / "byod_input")
 
 
+def test_issue_17_follow_ups(tmp_path):
+    import zipfile
+
+    # 1. the recorded fine-tune configuration names every trained parameter group.
+    assert "cls_token" in cap.FT_CONFIG["trainable"]
+    # 2. restarting export removes export/reload/report outputs, not only their receipts.
+    ctx = cap.Context(tmp_path / "run")
+    receipts = ctx.work / "receipts"
+    receipts.mkdir(parents=True, exist_ok=True)
+    for name in ("prepare", "baseline", "features", "train-head", "activity", "evaluate", "export", "reload", "report"):
+        (receipts / f"{name}.json").write_text("{}")
+    (ctx.out / "head_adapter").mkdir()
+    (ctx.out / "head_adapter" / "adapter.safetensors").write_bytes(b"old")
+    (ctx.out / "predictions").mkdir()
+    for name in ("verification.json", "results.zip", "run_summary.json", "conclusion.md", "metrics.csv"):
+        (ctx.out / name).write_text("old")
+    cap.start_stage(ctx, "export")
+    gone = ("head_adapter", "predictions", "verification.json", "results.zip", "run_summary.json", "conclusion.md")
+    assert not any((ctx.out / name).exists() for name in gone)
+    assert (ctx.out / "metrics.csv").exists()  # evaluate's outputs stay: evaluate did not restart
+    # 3. the canonical bundle excludes BYOD outputs and the BYOD bundle.
+    cap.write_json(ctx.out / "verification.json", {"binary_decisions_identical": True})
+    (ctx.out / "byod" / "predictions").mkdir(parents=True)
+    (ctx.out / "byod" / "predictions" / "user_C.tif").write_bytes(b"user")
+    (ctx.out / "byod_results.zip").write_bytes(b"user bundle")
+    cap.bundle_results(ctx)
+    with zipfile.ZipFile(ctx.out / "results.zip") as archive:
+        names = archive.namelist()
+    assert "metrics.csv" in names and not any(n.startswith("byod") for n in names)
+
+
 def test_metric_edge_cases_report_null_with_reasons():
     no_rice = np.zeros((4, 4), dtype=np.uint8)
     silent = cap.scores(cap.confusion(np.zeros((4, 4)), no_rice, 0.5))
