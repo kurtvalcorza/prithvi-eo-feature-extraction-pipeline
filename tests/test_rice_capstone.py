@@ -1394,3 +1394,12 @@ def test_issue_22_learner_reread_the_byod_cell_shows_the_test_comparison_before_
     exec(compile(cell.replace("USE_BYOD = False", "USE_BYOD = True", 1)
                  .replace("BYOD_PATH = ''", f"BYOD_PATH = {str(sources)!r}", 1), "byod-cell", "exec"), namespace)
     assert ("rows", ["all non-rice", "exported canonical head", "adapted head"]) in shown
+
+
+def test_issue_22_m3_release_wording_matches_the_recorded_evidence():
+    title = _markdown_with("**Driving question:**")
+    assert "stays Candidate until a browser Run all" not in title
+    assert "**Release status and evidence.**" in title and "separate from how much execution evidence exists" in title
+    assert "fine-tune checkbox ticked" in title and "`1ed294f0`" in title and "upload dialog" in title
+    assert "not evidence for it until it is run again" in title
+    assert _notebook()["metadata"]["dimer"]["release_status"] == "Candidate"  # never promoted by this issue

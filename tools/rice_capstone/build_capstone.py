@@ -176,7 +176,9 @@ By the end of this notebook you will be able to:
 | 11 | Read the run's answer and conclude with evidence | Evaluation practice |
 | 12 | Optional: bring your own chips | Engineering |
 
-**Evidence boundary.** 40 chip-years: 32 for training, 8 for validation, all validation chips from two regions (Central and Eastern Visayas). This is a teaching comparison, not a national accuracy estimate, and it stays Candidate until a browser Run all of this exact notebook, including the upload dialog, is recorded."""
+**Evidence boundary.** 40 chip-years: 32 for training, 8 for validation, all validation chips from two regions (Central and Eastern Visayas). This is a teaching comparison, not a national accuracy estimate.
+
+**Release status and evidence.** The status, **Candidate**, is a maintainer decision and is separate from how much execution evidence exists. The previous blob `1ed294f0` was run by the maintainer in a browser on 2026-10-12: Run all on the defaults, Run all with the fine-tune checkbox ticked, bring-your-own-data through the upload dialog, and a malformed upload that was refused with one clean message; earlier blobs also passed Colab CLI runs on a T4. This revision (issue #22: claims, label lineage, BYOD verification, spatial audit, observation support, GeoTIFF placement checks) changes the notebook, so those runs are not evidence for it until it is run again; `docs/release-verification.md` in the host repository records each run and what remains open."""
 
 PROBLEM = r"""### Problem statement
 
