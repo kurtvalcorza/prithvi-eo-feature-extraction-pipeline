@@ -576,7 +576,7 @@ Switched off by default. When `RUN_FINETUNE` is ticked, a separate system **C-FT
 
 To use it: tick the box, then Runtime → Run all on a fresh runtime.
 
-**Expected result / What to notice:** a fine-tune curve with development loss and F1 per epoch and a record naming the selected epoch, threshold and peak GPU memory; in Section 8 a fourth validation row, C-FT. Fine-tuning far more parameters on 24 fit chips can overfit, so C-FT may score below C; that is a result, not an error. Some PyTorch operations it uses are non-deterministic, so its numbers can vary slightly between runs."""
+**Expected result / What to notice:** a fine-tune curve with the fit loss and the development rice F1 at threshold 0.5 per epoch (development loss is not computed for C-FT) and a record naming the selected epoch, threshold and peak GPU memory; in Section 8 a fourth validation row, C-FT. Fine-tuning far more parameters on 24 fit chips can overfit, so C-FT may score below C; that is a result, not an error. Some PyTorch operations it uses are non-deterministic, so its numbers can vary slightly between runs."""
 
 CELL_FINETUNE = r"""RUN_FINETUNE = False  # @param {type:"boolean"}
 if RUN_FINETUNE:

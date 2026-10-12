@@ -1371,3 +1371,12 @@ def test_issue_22_m1_reload_fails_when_a_prediction_geotiff_is_misplaced(tmp_pat
     with pytest.raises(RuntimeError, match="reload parity failed"):
         cap.main(["--root", str(ctx.root), "--stage", "reload"])
     assert json.loads((ctx.out / "verification.json").read_text(encoding="utf-8"))["geotiff_placement_verified"] is False
+
+
+def test_issue_22_m2_fine_tune_text_names_what_the_curve_records():
+    sec7 = _markdown_with("## 7. Optional extension")
+    assert "development loss and F1 per epoch" not in sec7 and "fit loss and the development rice F1" in sec7
+    source = (TOOLS / "capstone.py").read_text(encoding="utf-8")
+    finetune = source[source.index("def stage_finetune"):source.index("def drop_stale_finetune")]
+    assert 'curve.append({"epoch": epoch, "fit_loss": float(np.mean(losses)), "dev_f1": f1})' in finetune
+    assert "dev_loss" not in finetune  # the text and the record agree: no development loss for C-FT
