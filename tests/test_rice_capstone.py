@@ -1380,3 +1380,17 @@ def test_issue_22_m2_fine_tune_text_names_what_the_curve_records():
     finetune = source[source.index("def stage_finetune"):source.index("def drop_stale_finetune")]
     assert 'curve.append({"epoch": epoch, "fit_loss": float(np.mean(losses)), "dev_f1": f1})' in finetune
     assert "dev_loss" not in finetune  # the text and the record agree: no development loss for C-FT
+
+
+def test_issue_22_learner_reread_the_byod_cell_shows_the_test_comparison_before_the_long_record(tmp_path, monkeypatch):
+    ctx, sources = _byod_standins(tmp_path, monkeypatch)
+    assert cap.main(["--root", str(ctx.root), "--stage", "byod", "--input", str(sources)]) == 0
+    cell = next(text for kind, text in _cells() if kind == "code" and "USE_BYOD = " in text)
+    shown = []
+    namespace = {"ROOT": ctx.root, "Path": Path, "json": json, "run_stage": lambda *a, **k: True,
+                 "show_table": lambda *a, **k: shown.append(("table", a)), "FileLink": lambda p: p,
+                 "display": lambda *a, **k: shown.append(("display", a)),
+                 "display_rows": lambda rows, columns: shown.append(("rows", [r["system"] for r in rows]))}
+    exec(compile(cell.replace("USE_BYOD = False", "USE_BYOD = True", 1)
+                 .replace("BYOD_PATH = ''", f"BYOD_PATH = {str(sources)!r}", 1), "byod-cell", "exec"), namespace)
+    assert ("rows", ["all non-rice", "exported canonical head", "adapted head"]) in shown
