@@ -42,6 +42,9 @@ DATASET_SLUG = "kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching"
 DATASET_VERSION = 1  # v2 and v3 (2026-10-11) change only the card and rights wording; Kaggle built no download
 # archive for them, so the notebook pins v1, whose data, INDEX.jsonl and member hashes are identical
 INDEX_SHA256 = "e92bbb9f20d1f7efb225d568e2a44a6ae3d59faab9079590e2dfad780458344d"
+# Label recipe of the dataset build (issue #22 M2): every INDEX row records it; it pins the annual-layer, code-map,
+# nearest-neighbour and edge-band rules described in Section 2.
+LABEL_RECIPE_SHA256 = "7adf68fe9d23622a1cf008f71cacd7c5006ed1377e34a5fc8c17c046953dc63e"
 DATASET_LICENSE = "CC BY 4.0"
 DEVELOPMENT_EXAMPLE_GROUP = "ph_96_766"  # a parent training sample: never used for selection or scoring
 
@@ -110,7 +113,10 @@ M1_NAMES += [f"q{q + 1}_{b}_mean" for q in range(QUARTERS) for b in BAND_NAMES]
 M1_NAMES += [f"q{q + 1}_observed_fraction" for q in range(QUARTERS)]
 
 ATTRIBUTION = (
-    "Rice labels: Chen et al., rice maps of the Philippines (Zenodo, https://doi.org/10.5281/zenodo.15124936), CC BY 4.0.\n"
+    "Rice labels: Chen et al., 20 m paddy rice cropping-intensity maps of Monsoon Asia (Zenodo, "
+    "https://doi.org/10.5281/zenodo.15124936), CC BY 4.0 - annual layer of each chip's year, codes 1-3 -> rice, "
+    "0 -> non-rice, nearest-neighbour to the 20 m chip grid, class-edge pixels ignored (label recipe "
+    "7adf68fe9d23622a1cf008f71cacd7c5006ed1377e34a5fc8c17c046953dc63e).\n"
     "Contains modified Copernicus Sentinel data 2019-2021.\n"
     "AlphaEarth Foundations Satellite Embedding (Google / Google DeepMind; Brown et al., 2025), CC BY 4.0 - carried "
     "in the dataset files; not read or shown by this notebook.\n"
@@ -720,6 +726,9 @@ def read_index(root: Path) -> list[dict[str, Any]]:
     rows = [json.loads(line) for line in data.decode("utf-8").splitlines() if line.strip()]
     if any(r["group_id"] == DEVELOPMENT_EXAMPLE_GROUP for r in rows):
         raise ValueError("the development example must not appear in the scoring index")
+    recipes = sorted({str(r.get("recipe_sha256")) for r in rows})
+    if recipes != [LABEL_RECIPE_SHA256]:
+        raise ValueError(f"INDEX label recipes {recipes} != pinned {LABEL_RECIPE_SHA256}; the labels changed")
     return rows
 
 

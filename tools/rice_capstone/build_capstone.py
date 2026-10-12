@@ -49,6 +49,18 @@ DATA_MANIFEST = {
     "chips": {"train": 32, "validation": 8},
     "keys_used": ["S2", "S2_valid", "label"],
     "keys_never_used": ["label_raw", "AlphaEarth", "AE_valid", "granule_count"],
+    "label_lineage": {  # issue #22 M2; facts from the dataset build recipe (see the spec, section 3)
+        "target": "annual paddy-rice occurrence according to the source map (not field-verified rice, rice area or number of seasons)",
+        "source": "Chen et al., 20 m resolution maps of paddy rice cropping intensity and planting dates in Monsoon Asia from 2018 to 2021, doi:10.5281/zenodo.15124936, CC BY 4.0",
+        "layer": "annual PADDYINTENSITY<year> of the same year as the chip-year; four-year composite and planting dates not used",
+        "code_map": {"1": 1, "2": 1, "3": 1, "0": 0, "other": "build fails"},
+        "non_rice_includes": "every source 0 in the chip, including water and sea (no per-pixel land mask)",
+        "resampling": "nearest neighbour from the 1/5400 degree EPSG:4326 source onto the 20 m EPSG:32651 chip grid (corners on multiples of 2560 m), with a one-pixel halo",
+        "ignore_255": "every pixel whose 3 x 3 neighbourhood holds both rice and non-rice (one pixel on each side of each class edge, diagonals included), plus pixels without source coverage",
+        "scored_pixels": "label != 255 only",
+        "recipe_sha256": "7adf68fe9d23622a1cf008f71cacd7c5006ed1377e34a5fc8c17c046953dc63e",
+        "rebuild_kit": "recipe-kit.zip sha256 976530ffa324f0d701051d757214a5dca977621d5a3e752b4f11bac0dbf7f032 in Kaggle kurtvalcorza/rice-philippines-s2-alphaearth-v1, version 2",
+    },
 }
 PIECE = 1000  # at most this many characters per carried string piece, so no cell line is unreadably long
 
@@ -168,9 +180,9 @@ By the end of this notebook you will be able to:
 
 PROBLEM = r"""### Problem statement
 
-**Who has the problem.** Agencies, researchers and analysts who monitor rice in the Philippines and want a yearly map of where rice is grown, made from satellite imagery rather than from field surveys alone.
+**Who has the problem.** Agencies, researchers and analysts who monitor rice in the Philippines and want a yearly map of where paddy rice is grown, made from satellite imagery rather than from field surveys alone.
 
-**The task.** Turn a year of Sentinel-2 observations of a 2.56 km chip into a 20 m map that marks each pixel rice or non-rice.
+**The task.** Turn a year of Sentinel-2 observations of a 2.56 km chip into a 20 m map that marks each pixel as paddy rice or not, where the reference is a published annual paddy-rice map (Section 2 gives the exact label definition). Scores cover the retained labelled pixels (`label ≠ 255`), not every exported pixel; class-edge pixels are excluded, which removes part of the small-field and edge-delineation problem from the score.
 
 **What a useful outcome looks like.** On the 8 validation chips, which are scored once, a system is useful if its pooled rice F1 is clearly above the all-non-rice floor (A, F1 0). A pretrained foundation model adds something here only if its head (C) reaches a higher pooled rice F1 than the hand-built spectral-temporal baseline (B) on the same pixels. Section 10 states this run's answer from its own validation table.
 
@@ -178,7 +190,7 @@ PROBLEM = r"""### Problem statement
 
 ### Data context
 
-The sample is the public Kaggle dataset *Philippines Rice S2 AlphaEarth v1 Teaching*, version 1 [9] (CC BY 4.0), compiled by Kurt Valcorza. It is a 40-chip teaching subset of a larger benchmark of Philippine chips from 2019–2021: 32 training chips and 8 validation chips, each 128 × 128 pixels at 20 m (about 350 MB in total). Each chip holds 24 calendar-bin median composites of six Sentinel-2 surface-reflectance bands (modified Copernicus Sentinel data [2]), a validity mask, AlphaEarth annual embeddings [8] (not used here), and a label from published 20 m annual rice maps [4]: 0 non-rice, 1 rice, 255 ignore.
+The sample is the public Kaggle dataset *Philippines Rice S2 AlphaEarth v1 Teaching*, version 1 [9] (CC BY 4.0), compiled by Kurt Valcorza. It is a 40-chip teaching subset of a larger benchmark of Philippine chips from 2019–2021: 32 training chips and 8 validation chips, each 128 × 128 pixels at 20 m (about 350 MB in total). Each chip holds 24 calendar-bin median composites of six Sentinel-2 surface-reflectance bands (modified Copernicus Sentinel data [2]), a validity mask, AlphaEarth annual embeddings [8] (not used here), and a label derived from a published annual paddy-rice cropping-intensity map [4] (same year as the chip): 0 non-rice, 1 rice, 255 ignore. Section 2 gives the exact derivation.
 
 **How representative it is.** The chips were chosen by a seeded geographic sampling rule that favours rice-containing chips, not drawn as a probability sample, and all 8 validation chips come from two neighbouring regions (PH-07 Central Visayas, PH-08 Eastern Visayas). Rice is a minority of the labelled pixels. Labels are map products, not field observations. Whether Prithvi-EO-2.0's pretraining imagery covered these places is unknown. These gaps limit the results to tutorial evidence about these chips."""
 
@@ -193,7 +205,7 @@ GLOSSARY = r"""<details>
 | **Calendar bin / compositing** | The year is cut into 24 equal bins; each bin holds the median of the cloud-free observations that fell in it. Empty bins are missing, not zero. |
 | **Valid mask** | `S2_valid` is 1 where a bin has a cloud-free observation. Missing values are NaN and are never read as reflectance. |
 | **NDVI** | (NIR − red) / (NIR + red): high for green vegetation, low for water and bare soil. |
-| **Label** | 0 non-rice, 1 rice, 255 ignore (including a 20 m band along class edges). Ignored pixels are never scored. |
+| **Label** | 0 non-rice, 1 paddy rice, 255 ignore (one pixel on each side of every rice/non-rice edge, about 40 m across). Ignored pixels are never scored. |
 | **Foundation model** | A large model pretrained on broad data and then adapted; Prithvi-EO-2.0 is one for Earth observation [3]. |
 | **Frozen features / head** | The pretrained encoder's internal outputs, used without changing its weights; the *head* is the small trainable layer on top. |
 | **Patch / token** | Prithvi cuts each frame into 16 × 16 pixel patches (320 m here) and describes each with a 1024-number *token*. |
@@ -405,7 +417,7 @@ The teaching dataset holds 40 chip-years from 2019–2021: 32 in training region
 - **Bands.** Six Sentinel-2 bands in the order the model expects: blue B2, green B3, red B4, narrow near-infrared B8A, and shortwave-infrared B11 and B12 [2]. Visible light shows colour; near-infrared is bright over healthy leaves; shortwave infrared drops over water and wet soil.
 - **Compositing and gaps.** The year is split into 24 equal calendar bins. Each bin is the median of that bin's cloud-free observations; where clouds hid every observation, the bin is missing (NaN, `S2_valid` = 0). The Philippines is cloudy, so gaps are normal.
 - **Why rice is temporal.** A paddy is flooded before transplanting (dark in shortwave infrared, low NDVI), then greens up quickly (NDVI rises), then is harvested (NDVI falls). One image can confuse young rice with water or grass; the sequence is distinctive [1].
-- **Labels.** Annual rice maps from Chen et al. [4], reprojected to the chip grid: 0 non-rice, 1 rice, 255 ignore, including a 20 m band along class edges. They are published map products, not field observations.
+- **Labels.** The target is **annual paddy-rice occurrence according to a published map**, not field-verified rice. The source is Chen et al.'s *20 m resolution maps of paddy rice cropping intensity* [4]: for each chip-year the **annual layer of the same year** (`PADDYINTENSITY2019`, `2020` or `2021`) is used; the four-year composite and the planting-date layers are not. Source codes 1, 2 and 3 (single, double and triple paddy rice) become **1 rice**; code 0 (no paddy rice) becomes **0 non-rice** — which includes water and sea, because no land mask is applied inside a chip; any other code would stop the dataset build. The number of seasons is discarded. The source grid (1/5400°, about 20 m, geographic coordinates) is resampled by **nearest neighbour** onto each chip's 20 m UTM grid. **255 ignore** marks every pixel whose 3 × 3 neighbourhood holds both rice and non-rice — one 20 m pixel on **each** side of every class edge, diagonals included, so about 40 m across an edge — computed with a one-pixel halo beyond the chip. Scores use only pixels with `label ≠ 255`, so excluding these edge pixels removes part of the small-field and field-edge problem from the score. The recipe is pinned: every chip records label-recipe SHA-256 `7adf68fe…`, which the notebook checks, and the rebuild kit is public (see *Data, model, attribution and licences*). They are published map products, not field observations.
 
 **Input:** the public dataset, verified against the pinned `INDEX.jsonl` digest and every chip's SHA-256. **System:** schema checks, frame selection and three deliberate refusal probes. **Output:** a per-chip table, composites, an NDVI series and valid-observation counts by bin. The development example shipped with the dataset is a training sample from the parent study, so it is never read.
 
@@ -674,7 +686,7 @@ LICENCES = r"""## Data, model, attribution and licences
 
 **Data:** `kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching`, version 1 (public, CC BY 4.0; later versions change only the card and rights wording, with identical data files), verified by `INDEX.jsonl` SHA-256 `e92bbb9f20d1f7efb225d568e2a44a6ae3d59faab9079590e2dfad780458344d` and every chip's SHA-256. Component attribution, from the dataset's rights file:
 
-- **Rice labels:** Chen et al., *20 m resolution maps of paddy rice cropping intensity and planting dates in Monsoon Asia from 2018 to 2021* [4], https://doi.org/10.5281/zenodo.15124936, CC BY 4.0 — reprojected, converted to binary and given an ignored edge band.
+- **Rice labels:** Chen et al., *20 m resolution maps of paddy rice cropping intensity and planting dates in Monsoon Asia from 2018 to 2021* [4], https://doi.org/10.5281/zenodo.15124936, CC BY 4.0 — the annual `PADDYINTENSITY<year>` layer of each chip's year (not the four-year composite), codes 1/2/3 → rice and 0 → non-rice, nearest-neighbour resampling to the 20 m EPSG:32651 chip grid, and a 255 band one pixel wide on each side of every class edge. Label recipe SHA-256 `7adf68fe9d23622a1cf008f71cacd7c5006ed1377e34a5fc8c17c046953dc63e` (checked against every INDEX row); public rebuild kit `recipe-kit.zip` SHA-256 `976530ffa324f0d701051d757214a5dca977621d5a3e752b4f11bac0dbf7f032` in the parent Kaggle dataset `kurtvalcorza/rice-philippines-s2-alphaearth-v1` (version 2; it holds `build_samples.py` and `dataset_contract.py`). The teaching dataset itself does not carry the kit. The Chen rasters' whole-file integrity was not verified at build time (Philippine crops were range-read from the authors' mirror), and the build re-derived the labels with the same code rather than an independent implementation.
 - **Optical inputs:** Contains modified Copernicus Sentinel data 2019–2021 (cloud/quality masking, six-band selection, 20 m resampling, 24 annual median bins), under the Copernicus Sentinel data terms.
 - **AlphaEarth Foundations Satellite Embedding** (Google and Google DeepMind) [8], CC BY 4.0 — present in the dataset files; not read or shown by this notebook.
 - **Regional boundaries:** geoBoundaries PHL ADM1 (2020 vintage; NAMRIA/PSA/OCHA), CC BY 3.0 IGO.

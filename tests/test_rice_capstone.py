@@ -1083,3 +1083,32 @@ def test_issue_22_m3_learner_text_describes_the_check_as_head_serialization_pari
     assert "reloaded from files." not in byod and "does not rebuild the base model" in byod
     trouble = _markdown_with("## Troubleshooting")
     assert "head-serialization parity" in trouble and "not a `Refused:` message" in trouble
+
+
+def test_issue_22_m2_label_lineage_is_explicit_and_the_recipe_is_checked(tmp_path, monkeypatch):
+    lineage = gen.DATA_MANIFEST["label_lineage"]
+    assert lineage["recipe_sha256"] == cap.LABEL_RECIPE_SHA256
+    assert lineage["code_map"] == {"1": 1, "2": 1, "3": 1, "0": 0, "other": "build fails"}
+    assert "same year" in lineage["layer"] and "composite" in lineage["layer"] and "nearest" in lineage["resampling"]
+    assert "976530ffa324f0d701051d757214a5dca977621d5a3e752b4f11bac0dbf7f032" in lineage["rebuild_kit"]
+    labels = _markdown_with("## 2. Inspect the chips")
+    for phrase in ("annual paddy-rice occurrence according to a published map", "same year", "nearest neighbour",
+                   "water and sea", "each** side of every class edge", "`label ≠ 255`", "7adf68fe"):
+        assert phrase in labels, phrase
+    markdown = "\n".join(text for kind, text in _cells() if kind == "markdown")
+    assert "20 m band along class edges" not in markdown and "where rice is grown" not in markdown
+    assert "not every exported pixel" in _markdown_with("### Problem statement")
+    licences = _markdown_with("## Data, model, attribution and licences")
+    assert "recipe-kit.zip" in licences and "not the four-year composite" in licences
+
+    def index(rows):
+        data = "".join(json.dumps(r) + "\n" for r in rows).encode("utf-8")
+        (tmp_path / "INDEX.jsonl").write_bytes(data)
+        monkeypatch.setattr(cap, "INDEX_SHA256", hashlib.sha256(data).hexdigest())
+
+    row = {"group_id": "ph_1_2", "year": 2020, "recipe_sha256": cap.LABEL_RECIPE_SHA256}
+    index([row])
+    assert cap.read_index(tmp_path) == [row]
+    index([row, {**row, "group_id": "ph_3_4", "recipe_sha256": "0" * 64}])
+    with pytest.raises(ValueError, match="label recipes"):
+        cap.read_index(tmp_path)
