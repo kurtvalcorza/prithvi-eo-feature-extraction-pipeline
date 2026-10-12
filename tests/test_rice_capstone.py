@@ -1198,3 +1198,118 @@ def test_issue_22_s2_successful_byod_adaptation_records_its_spatial_audit(tmp_pa
     audit = summary["adaptation"]["spatial_audit"]
     assert audit["chips"] == 6 and audit["unique_sites"] == 6 and audit["georeferenced_chips"] == 0
     assert summary["grouping"]["site_ids_from_file_name_unverified"] == []
+
+
+def test_issue_22_s3_observation_support_partitions_the_primary_scored_pixels():
+    valid = np.ones((24, 4, 4), np.uint8)
+    bins = [0, 6, 12, 18]
+    valid[0, 0, :] = 0
+    valid[6, 0, :2] = 0
+    counts = cap.observed_frame_counts(valid, bins)
+    assert counts.dtype == np.uint8 and counts[0, 0] == 2 and counts[0, 3] == 3 and counts[1, 1] == 4
+    rng = np.random.default_rng(3)
+    labels = [rng.integers(0, 2, (4, 4)).astype(np.uint8) for _ in range(2)]
+    labels[0][3, 3] = 255
+    probs = [rng.uniform(size=(4, 4)) for _ in range(2)]
+    rows = cap.support_rows("C", probs, labels, [counts, counts], 0.5)
+    primary = cap.pooled(probs, labels, 0.5)
+    assert [r["observed_frames"] for r in rows] == [2, 3, 4]  # empty groups are omitted, never reported as zero
+    for key in ("tp", "fp", "fn", "tn"):
+        assert sum(r[key] for r in rows) == primary[key]
+
+
+def _evaluation_standins(tmp_path: Path, monkeypatch):
+    """CPU stand-ins for evaluate -> export -> reload (no torch, LightGBM or matplotlib): two synthetic validation chips
+    with cloud gaps, a fake booster, a tiny numpy head on random 8-channel 'features'. Real code paths: scoring, the
+    observation-support diagnostic, the head artifact, the four GeoTIFFs per chip and the reload checks."""
+    import types
+
+    h5py = pytest.importorskip("h5py")
+    pytest.importorskip("safetensors")
+    pytest.importorskip("tifffile")
+    ctx = cap.Context(tmp_path / "run")
+    (ctx.work / "receipts").mkdir(parents=True, exist_ok=True)
+    ids, chips = ["ph_1_1_2020", "ph_9_9_2021"], {}
+    rng = np.random.default_rng(7)
+    features = {}
+    for i, cid in enumerate(ids):
+        chip = _chip(60 + i)
+        chip["S2_valid"][:, :40, :] = 0  # a cloudy band: fewer observed frames there
+        chip["S2_valid"][3, 40:80, :] = 0
+        chip["S2"][np.broadcast_to(chip["S2_valid"][:, None] == 0, chip["S2"].shape)] = np.nan
+        path = tmp_path / f"{cid}.h5"
+        with h5py.File(path, "w") as handle:
+            handle["S2"], handle["S2_valid"], handle["label"] = chip["S2"], chip["S2_valid"], chip["label"]
+        chips[cid] = {"path": str(path), "role": "validation", "region": "PH-07", "x_min": 614400.0 + 2560 * i,
+                      "y_max": 1095680.0, "frames": cap.select_frames(chip["S2_valid"])}
+        features[cid] = rng.normal(size=(8, 8, 8)).astype(np.float32)
+    cap.write_json(ctx.work / "records.json", {"chips": chips, "roles": {"validation": ids}})
+    head = {k: np.random.default_rng(5).normal(size=s).astype(np.float32) for k, s in cap.head_shapes(8, 4).items()}
+    np.savez(ctx.work / "head_c.npz", **head)
+    np.savez(ctx.work / "features_t4.npz", **features)
+    np.save(ctx.work / "baseline_b_fill.npy", np.zeros(len(cap.M1_NAMES)))
+    cap.write_json(ctx.out / "selection.json", {"B": {"threshold": 0.5}, "C": {"threshold": 0.45, "selected_epoch": 3,
+                                                "config": cap.HEAD_CONFIG}, "activity": {}})
+    for name in ("prepare", "baseline", "train-head", "activity"):
+        (ctx.work / "receipts" / f"{name}.json").write_text("{}")
+
+    class Booster:
+        def __init__(self, **_kwargs):
+            pass
+
+        def predict(self, x, **_kwargs):
+            return 1.0 / (1.0 + np.exp(-np.nan_to_num(x[:, 0]) * 3 + 0.5))
+
+    def probabilities(_torch, state, x, device="cpu"):
+        margin = cap.head_forward_numpy(state, np.asarray(x, dtype=np.float32))
+        return 1.0 / (1.0 + np.exp(-np.kron(margin, np.ones((16, 16))).astype(np.float64)))
+
+    by_input = {}
+
+    def encode(_pipe, x):  # the reload recomputes C's input from the HDF5 chip; map it back to that chip's features
+        key = round(float(np.abs(x).sum()), 3)
+        return features[by_input[key]][None]
+
+    for cid in ids:
+        chip = cap.read_chip_h5(Path(chips[cid]["path"]))
+        by_input[round(float(np.abs(cap.prithvi_input(chip, chips[cid]["frames"]["bins"])[0]).sum()), 3)] = cid
+    monkeypatch.setitem(sys.modules, "lightgbm", types.SimpleNamespace(Booster=Booster))
+    torch_standin = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: True))
+    monkeypatch.setattr(cap, "_torch_setup", lambda *a, **k: torch_standin)
+    monkeypatch.setattr(cap, "_load_head", lambda _torch, state: {k: np.asarray(v) for k, v in state.items()})
+    monkeypatch.setattr(cap, "head_probabilities", probabilities)
+    monkeypatch.setattr(cap, "_evaluation_figures", lambda *a, **k: None)  # matplotlib is not in CI
+    monkeypatch.setattr(cap, "load_prithvi", lambda _ctx: object())
+    monkeypatch.setattr(cap, "encode", encode)
+    return ctx, ids
+
+
+def test_issue_22_s3_evaluate_export_reload_write_and_verify_observation_support(tmp_path, monkeypatch):
+    ctx, ids = _evaluation_standins(tmp_path, monkeypatch)
+    for stage in ("evaluate", "export", "reload"):
+        assert cap.main(["--root", str(ctx.root), "--stage", stage]) == 0, stage
+    metrics = {r["system"]: r for r in cap.read_csv(ctx.out / "metrics.csv")}
+    support = cap.read_csv(ctx.out / "observation_support.csv")
+    assert {r["system"] for r in support} == {"B LightGBM", "C frozen Prithvi + head"}
+    assert {r["observed_frames"] for r in support} == {0, 4}  # never-observed pixels stay scored (count 0)
+    for system in ("B LightGBM", "C frozen Prithvi + head"):
+        for key in ("tp", "fp", "fn", "tn"):
+            assert sum(r[key] for r in support if r["system"] == system) == metrics[system][key], (system, key)
+    verification = json.loads((ctx.out / "verification.json").read_text(encoding="utf-8"))
+    assert verification["observation_support_geotiffs_match"] is True
+    array, geo = cap.read_geotiff(ctx.out / "predictions" / f"{ids[0]}_observed_frames.tif")
+    assert array.dtype == np.uint8 and array.max() <= 4 and geo["epsg"] == cap.EPSG
+    # a tampered support map fails the reload
+    cap.write_geotiff(ctx.out / "predictions" / f"{ids[0]}_observed_frames.tif", np.zeros((128, 128)), nodata=None,
+                      x_min=geo["x_min"], y_max=geo["y_max"])
+    with pytest.raises(RuntimeError, match="reload parity failed"):
+        cap.main(["--root", str(ctx.root), "--stage", "reload"])
+
+
+def test_issue_22_s3_learner_text_explains_the_asymmetry_and_shows_the_diagnostic():
+    sec4 = _markdown_with("## 4. Trace how Prithvi's input")
+    assert "no validity channel" in sec4 and "observed fraction" in sec4
+    sec9 = _markdown_with("## 9. Interpret the result")
+    assert "secondary diagnostic" in sec9 and "primary comparison is unchanged" in sec9
+    figures = next(text for kind, text in _cells() if kind == "code" and "show_figures('validation_*')" in text)
+    assert "observation_support.csv" in figures

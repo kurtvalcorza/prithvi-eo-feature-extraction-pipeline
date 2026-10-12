@@ -101,6 +101,7 @@ Change one thing on development chips only: **number of frames, T = 1 (best sing
 ## 9. Metrics and evidence boundaries
 
 - Aggregate TP/FP/FN/TN over pixels with `label != 255`; report pooled rice F1 (primary), IoU, precision, recall. Undefined ratios are null with a reason.
+- Observation support (issue #22 S3): B receives quarterly observed-fraction features; C receives mean-filled standardised inputs without a validity channel, and pixels unobserved in all selected frames stay scored. `observation_support.csv` splits B's and C's pooled metrics by the number of observed selected frames (0–4) as a secondary diagnostic; the primary common evaluation mask is unchanged. `<chip>_observed_frames.tif` exports the count.
 - Per-chip table for diagnosis only. Chips and pixels are spatially clustered (many chips touch); no pixel-level or chip-level significance tests or narrow confidence intervals.
 - 8 validation chips from two regions: no national or operational claim.
 - B and C differ in temporal information, missing-data handling, class sampling and prediction architecture: a whole-pipeline comparison, not an isolation of pretraining (issue #22 S1). Keep three claims apart: some reference-rice signal (F1 above A), comparator performance (C vs B under the declared metric), and practical usefulness (not addressed) (S4).

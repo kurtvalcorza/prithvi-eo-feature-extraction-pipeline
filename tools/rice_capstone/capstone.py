@@ -1425,6 +1425,30 @@ def drop_stale_finetune(ctx: Context) -> bool:
     return stale
 
 
+SUPPORT_COLUMNS = ["system", "observed_frames", "threshold", "f1", "precision", "recall", "iou", "scored_pixels",
+                   "reference_rice_pixels", "tp", "fp", "fn", "tn", "undefined"]
+
+
+def observed_frame_counts(valid: np.ndarray, bins: Sequence[int]) -> np.ndarray:
+    """(H, W) uint8: in how many of C's selected frames each pixel has a valid observation (0 to len(bins)). Where it
+    is below len(bins), C's input there is the filled pretraining mean, with no channel telling the head so."""
+    return np.asarray(valid, dtype=np.uint8)[list(bins)].sum(axis=0).astype(np.uint8)
+
+
+def support_rows(system: str, probabilities: Sequence[np.ndarray], labels: Sequence[np.ndarray],
+                 counts: Sequence[np.ndarray], threshold: float, frames: int = QUARTERS) -> list[dict[str, Any]]:
+    """Secondary diagnostic (issue #22 S3): pooled metrics of one system split by the number of observed selected
+    frames. The groups partition the same scored pixels as the primary table; nothing is removed from it."""
+    rows = []
+    for k in range(frames + 1):
+        masked = [np.where(np.asarray(c) == k, lab, IGNORE).astype(np.uint8) for c, lab in zip(counts, labels, strict=True)]
+        if not any((m != IGNORE).any() for m in masked):
+            continue
+        rows.append({"system": system, "observed_frames": k, "threshold": threshold,
+                     **pooled(probabilities, masked, threshold)})
+    return rows
+
+
 def stage_evaluate(ctx: Context) -> None:
     import lightgbm as lgb
 
@@ -1468,6 +1492,12 @@ def stage_evaluate(ctx: Context) -> None:
     write_csv(ctx.out / "per_chip_metrics.csv", chip_rows, CHIP_COLUMNS)
     np.savez(ctx.work / "validation_probs_c.npz", **dict(zip(ids, probs["C frozen Prithvi + head"], strict=True)))
     np.savez(ctx.work / "validation_probs_b.npz", **dict(zip(ids, probs["B LightGBM"], strict=True)))
+    counts = [observed_frame_counts(c["S2_valid"], records["chips"][cid]["frames"]["bins"]) for cid, c in
+              zip(ids, chips, strict=True)]
+    np.savez(ctx.work / "validation_observed_frames.npz", **dict(zip(ids, counts, strict=True)))
+    support = [row for system, values in probs.items() if not system.startswith("A")
+               for row in support_rows(system, values, labels, counts, thresholds[system])]
+    write_csv(ctx.out / "observation_support.csv", support, SUPPORT_COLUMNS)
     _evaluation_figures(ctx, ids, chips, probs, thresholds)
     ctx.receipt("evaluate", systems=list(probs))
 
@@ -1554,6 +1584,7 @@ def stage_export(ctx: Context) -> None:
     save_head(params, ctx.out / "head_adapter", _head_metadata(selection, "development chips (fit/dev protocol)"))
     records = ctx.records()
     probs = dict(np.load(ctx.work / "validation_probs_c.npz"))
+    support = dict(np.load(ctx.work / "validation_observed_frames.npz"))
     t = selection["C"]["threshold"]
     for cid, p in probs.items():
         label = ctx.chip(cid)["label"]
@@ -1565,7 +1596,9 @@ def stage_export(ctx: Context) -> None:
         # Usable maps: a decision for every pixel, and the rice scores themselves, so a user can choose a threshold.
         write_geotiff(ctx.out / "predictions" / f"{cid}_C_all_pixels.tif", decision, **where)
         write_geotiff(ctx.out / "predictions" / f"{cid}_C_score.tif", p, nodata=None, dtype=np.float32, **where)
-    ctx.receipt("export", geotiffs=3 * len(probs))
+        # Observation support (issue #22 S3): how many of C's four selected frames observed each pixel (0 = all filled).
+        write_geotiff(ctx.out / "predictions" / f"{cid}_observed_frames.tif", support[cid], nodata=None, **where)
+    ctx.receipt("export", geotiffs=4 * len(probs))
 
 
 def stage_reload(ctx: Context) -> None:
@@ -1581,7 +1614,7 @@ def stage_reload(ctx: Context) -> None:
     records = ctx.records()
     saved = dict(np.load(ctx.work / "validation_probs_c.npz"))
     t = float(manifest["threshold"])
-    worst, identical, geotiff_ok, extra_ok = 0.0, True, True, True
+    worst, identical, geotiff_ok, extra_ok, support_ok = 0.0, True, True, True, True
     labels, from_tiff = [], []
     for cid in records["roles"]["validation"]:
         chip = ctx.chip(cid)
@@ -1597,6 +1630,9 @@ def stage_reload(ctx: Context) -> None:
         extra_ok &= (bool(np.array_equal(everywhere, (saved[cid] >= t).astype(np.uint8)))
                      and bool(np.array_equal(score, saved[cid].astype(np.float32)))
                      and geo_all.get("epsg") == EPSG and geo_score.get("epsg") == EPSG)
+        observed, geo_obs = read_geotiff(ctx.out / "predictions" / f"{cid}_observed_frames.tif")
+        support_ok &= (bool(np.array_equal(observed, observed_frame_counts(chip["S2_valid"], select_frames(
+            chip["S2_valid"])["bins"]))) and geo_obs.get("epsg") == EPSG)
         labels.append(chip["label"])
         from_tiff.append(np.where(array == IGNORE, 0, array).astype(np.float64))
     recomputed = pooled(from_tiff, labels, 0.5)
@@ -1608,10 +1644,11 @@ def stage_reload(ctx: Context) -> None:
         "binary_decisions_identical": identical, "geotiffs_match_and_georeferenced": geotiff_ok,
         "metrics_recomputed_from_geotiffs": metrics_ok,
         "score_and_all_pixel_geotiffs_match": extra_ok,
+        "observation_support_geotiffs_match": support_ok,
         "meaning": "the saved computation is reproducible from files in a fresh process; not evidence of accuracy",
     }
     write_json(ctx.out / "verification.json", result)
-    if not (worst <= RELOAD_TOLERANCE and identical and geotiff_ok and metrics_ok and extra_ok):
+    if not (worst <= RELOAD_TOLERANCE and identical and geotiff_ok and metrics_ok and extra_ok and support_ok):
         raise RuntimeError(f"reload parity failed: {result}")
     ctx.receipt("reload")
 
