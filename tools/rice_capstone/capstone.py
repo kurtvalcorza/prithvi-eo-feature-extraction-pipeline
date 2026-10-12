@@ -673,6 +673,39 @@ def read_geotiff(path: Path) -> tuple[np.ndarray, dict[str, Any]]:
     return array, geo
 
 
+def geotiff_placement(path: Path) -> dict[str, Any]:
+    """Full placement record of one GeoTIFF from its tags (issue #22 m1): raster shape, pixel scale, tiepoint, the
+    GeoKey directory as {key: value}, the affine transform (a, b, c, d, e, f) and bounds (left, bottom, right, top)."""
+    import tifffile
+
+    with tifffile.TiffFile(path) as tif:
+        page = tif.pages[0]
+        shape = tuple(int(v) for v in page.shape[:2])
+        tags = {tag.code: tag.value for tag in page.tags.values()}
+    if 33550 not in tags or 33922 not in tags or 34735 not in tags:
+        return {"shape": shape, "georeferenced": False}
+    scale, tie, keys = tuple(map(float, tags[33550])), tuple(map(float, tags[33922])), tuple(map(int, tags[34735]))
+    geokeys = {keys[i]: keys[i + 3] for i in range(4, 4 + 4 * keys[3], 4) if keys[i + 1] == 0}  # inline SHORT values
+    a, e = scale[0], -scale[1]
+    c, f = tie[3] - tie[0] * a, tie[4] - tie[1] * e
+    rows, cols = shape
+    return {"shape": shape, "georeferenced": True, "pixel_scale": scale[:2], "tiepoint": tie, "geokeys": geokeys,
+            "transform": (a, 0.0, c, 0.0, e, f), "bounds": (c, f + rows * e, c + cols * a, f)}
+
+
+def placement_matches(placement: Mapping[str, Any], x_min: float, y_max: float) -> bool:
+    """True when a GeoTIFF sits exactly on its chip: 128 x 128, projected EPSG:32651, pixel-is-area, 20 m north-up
+    transform with upper-left corner (x_min, y_max) and bounds one chip (2560 m) wide."""
+    return bool(
+        placement.get("georeferenced") and placement["shape"] == (CHIP, CHIP)
+        and placement["geokeys"].get(1024) == 1 and placement["geokeys"].get(1025) == 1
+        and placement["geokeys"].get(3072) == EPSG
+        and placement["transform"] == (PIXEL_METRES, 0.0, float(x_min), 0.0, -PIXEL_METRES, float(y_max))
+        and placement["bounds"] == (float(x_min), float(y_max) - CHIP * PIXEL_METRES,
+                                    float(x_min) + CHIP * PIXEL_METRES, float(y_max))
+    )
+
+
 def _csv_value(value: Any) -> Any:
     if value is None:
         return ""
@@ -1614,7 +1647,7 @@ def stage_reload(ctx: Context) -> None:
     records = ctx.records()
     saved = dict(np.load(ctx.work / "validation_probs_c.npz"))
     t = float(manifest["threshold"])
-    worst, identical, geotiff_ok, extra_ok, support_ok = 0.0, True, True, True, True
+    worst, identical, geotiff_ok, extra_ok, support_ok, placed_ok = 0.0, True, True, True, True, True
     labels, from_tiff = [], []
     for cid in records["roles"]["validation"]:
         chip = ctx.chip(cid)
@@ -1633,6 +1666,10 @@ def stage_reload(ctx: Context) -> None:
         observed, geo_obs = read_geotiff(ctx.out / "predictions" / f"{cid}_observed_frames.tif")
         support_ok &= (bool(np.array_equal(observed, observed_frame_counts(chip["S2_valid"], select_frames(
             chip["S2_valid"])["bins"]))) and geo_obs.get("epsg") == EPSG)
+        info = records["chips"][cid]
+        for suffix in ("_C", "_C_all_pixels", "_C_score", "_observed_frames"):  # m1: origin, size, transform, bounds
+            placed_ok &= placement_matches(geotiff_placement(ctx.out / "predictions" / f"{cid}{suffix}.tif"),
+                                           info["x_min"], info["y_max"])
         labels.append(chip["label"])
         from_tiff.append(np.where(array == IGNORE, 0, array).astype(np.float64))
     recomputed = pooled(from_tiff, labels, 0.5)
@@ -1645,10 +1682,11 @@ def stage_reload(ctx: Context) -> None:
         "metrics_recomputed_from_geotiffs": metrics_ok,
         "score_and_all_pixel_geotiffs_match": extra_ok,
         "observation_support_geotiffs_match": support_ok,
+        "geotiff_placement_verified": placed_ok,
         "meaning": "the saved computation is reproducible from files in a fresh process; not evidence of accuracy",
     }
     write_json(ctx.out / "verification.json", result)
-    if not (worst <= RELOAD_TOLERANCE and identical and geotiff_ok and metrics_ok and extra_ok and support_ok):
+    if not (worst <= RELOAD_TOLERANCE and identical and geotiff_ok and metrics_ok and extra_ok and support_ok and placed_ok):
         raise RuntimeError(f"reload parity failed: {result}")
     ctx.receipt("reload")
 

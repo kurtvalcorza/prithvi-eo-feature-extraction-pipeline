@@ -1313,3 +1313,61 @@ def test_issue_22_s3_learner_text_explains_the_asymmetry_and_shows_the_diagnosti
     assert "secondary diagnostic" in sec9 and "primary comparison is unchanged" in sec9
     figures = next(text for kind, text in _cells() if kind == "code" and "show_figures('validation_*')" in text)
     assert "observation_support.csv" in figures
+
+
+def _geotiff_tags_by_struct(path: Path) -> dict[int, tuple]:
+    """An independent little reader of a classic TIFF's first IFD (struct only, no tifffile), returning the values of
+    the GeoTIFF tags 33550 (ModelPixelScale), 33922 (ModelTiepoint) and 34735 (GeoKeyDirectory) plus width/length."""
+    import struct
+
+    data = path.read_bytes()
+    order = {b"II": "<", b"MM": ">"}[data[:2]]
+    assert struct.unpack(order + "H", data[2:4])[0] == 42, "not a classic TIFF"
+    ifd = struct.unpack(order + "I", data[4:8])[0]
+    count = struct.unpack(order + "H", data[ifd:ifd + 2])[0]
+    sizes = {3: ("H", 2), 4: ("I", 4), 12: ("d", 8)}
+    out = {}
+    for n in range(count):
+        tag, kind, items, raw = struct.unpack(order + "HHI4s", data[ifd + 2 + 12 * n: ifd + 14 + 12 * n])
+        if tag not in (256, 257, 33550, 33922, 34735) or kind not in sizes:
+            continue
+        code, size = sizes[kind]
+        blob = raw if items * size <= 4 else data[struct.unpack(order + "I", raw)[0]:][:items * size]
+        out[tag] = struct.unpack(order + code * items, blob[:items * size])
+    return out
+
+
+def test_issue_22_m1_geotiff_placement_is_checked_and_read_independently(tmp_path):
+    pytest.importorskip("tifffile")
+    x_min, y_max = 614400.0, 1095680.0
+    cap.write_geotiff(tmp_path / "p.tif", np.ones((128, 128), np.uint8), x_min=x_min, y_max=y_max)
+    placement = cap.geotiff_placement(tmp_path / "p.tif")
+    assert placement["transform"] == (20.0, 0.0, x_min, 0.0, -20.0, y_max)
+    assert placement["bounds"] == (x_min, y_max - 2560.0, x_min + 2560.0, y_max)
+    assert placement["geokeys"] == {1024: 1, 1025: 1, 3072: 32651}
+    assert cap.placement_matches(placement, x_min, y_max)
+    assert not cap.placement_matches(placement, x_min + 20.0, y_max)  # one pixel off is caught
+    cap.write_geotiff(tmp_path / "small.tif", np.ones((64, 64), np.uint8), x_min=x_min, y_max=y_max)
+    assert not cap.placement_matches(cap.geotiff_placement(tmp_path / "small.tif"), x_min, y_max)
+    cap.write_geotiff(tmp_path / "plain.tif", np.ones((128, 128), np.uint8), x_min=None, y_max=None)
+    assert not cap.placement_matches(cap.geotiff_placement(tmp_path / "plain.tif"), x_min, y_max)
+    # Independent of tifffile's reader: the raw tags say the same thing a GIS would read.
+    tags = _geotiff_tags_by_struct(tmp_path / "p.tif")
+    assert (tags[256][0], tags[257][0]) == (128, 128)
+    assert tags[33550] == (20.0, 20.0, 0.0) and tags[33922] == (0.0, 0.0, 0.0, x_min, y_max, 0.0)
+    keys = tags[34735]
+    assert keys[:4] == (1, 1, 0, 3)
+    assert {keys[i]: keys[i + 3] for i in range(4, len(keys), 4)} == {1024: 1, 1025: 1, 3072: 32651}
+
+
+def test_issue_22_m1_reload_fails_when_a_prediction_geotiff_is_misplaced(tmp_path, monkeypatch):
+    ctx, ids = _evaluation_standins(tmp_path, monkeypatch)
+    for stage in ("evaluate", "export", "reload"):
+        assert cap.main(["--root", str(ctx.root), "--stage", stage]) == 0, stage
+    assert json.loads((ctx.out / "verification.json").read_text(encoding="utf-8"))["geotiff_placement_verified"] is True
+    path = ctx.out / "predictions" / f"{ids[1]}_C_score.tif"
+    array, geo = cap.read_geotiff(path)
+    cap.write_geotiff(path, array, x_min=geo["x_min"] + 2560.0, y_max=geo["y_max"], nodata=None, dtype=np.float32)
+    with pytest.raises(RuntimeError, match="reload parity failed"):
+        cap.main(["--root", str(ctx.root), "--stage", "reload"])
+    assert json.loads((ctx.out / "verification.json").read_text(encoding="utf-8"))["geotiff_placement_verified"] is False
