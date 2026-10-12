@@ -963,3 +963,123 @@ def test_issue_22_m1_the_frame_activity_is_a_fixed_recipe_comparison_without_cau
     assert "without claiming a cause" in source
     spec = (ROOT / "docs" / "philippines-rice-mapping-capstone-spec.md").read_text(encoding="utf-8")
     assert "Demonstrates that rice is identified by its season" not in spec and "fixed-recipe" in spec
+
+
+@pytest.mark.parametrize("case, after, reason", [
+    ("excessive difference", lambda p: p + 0.01, "exceeds"),
+    ("non-finite difference", lambda p: np.where(np.arange(p.size).reshape(p.shape) == 0, np.nan, p), "not finite"),
+    ("binary disagreement", lambda p: np.where(np.isclose(p, 0.5), 0.5 - 1e-6, p), "decisions"),
+])
+def test_issue_22_m3_head_serialization_parity_rejects_each_failure_mode(case, after, reason):
+    before = np.linspace(0.0, 1.0, 2 * 4 * 4).reshape(2, 4, 4)
+    before[0, 0, 1] = 0.5  # exactly at the threshold, so a 1e-6 change flips the decision but stays within tolerance
+    record = cap.head_serialization_parity(before, after(before), 0.5)
+    assert record["passed"] is False, case
+    with pytest.raises(cap.ReloadParityError, match=reason) as raised:
+        cap.require_head_serialization_parity(record)
+    assert not isinstance(raised.value, cap.ChipError)  # never a learner "Refused:" input refusal (exit 3)
+    assert "not a problem with your files" in str(raised.value) and "no BYOD result bundle" in str(raised.value)
+
+
+def test_issue_22_m3_head_serialization_parity_accepts_identical_scores_and_names_its_scope():
+    before = np.random.default_rng(0).uniform(size=(2, 8, 8))
+    record = cap.head_serialization_parity(before, before + 1e-7, 0.5)
+    assert record["passed"] and record["finite"] and record["binary_decisions_identical"]
+    assert record["max_abs_difference"] == pytest.approx(1e-7) and record["tolerance"] == cap.RELOAD_TOLERANCE
+    assert "head-serialization parity" in record["check"] and "not the canonical fresh-process" in record["check"]
+    cap.require_head_serialization_parity(record)  # passes silently
+
+
+def _byod_standins(tmp_path: Path, monkeypatch, *, corrupt_reload=None):
+    """CPU stand-ins for the model parts of stage_byod (no torch): random 8-channel 'encoder features', a tiny head
+    evaluated with head_forward_numpy, and a 'trained' head drawn from a seeded generator. Real code paths: chip
+    validation, the site split, threshold selection, save_head/load_head (safetensors), GeoTIFFs, the bundle."""
+    h5py = pytest.importorskip("h5py")
+    pytest.importorskip("safetensors")
+    pytest.importorskip("tifffile")
+    ctx = cap.Context(tmp_path / "run")
+    (ctx.work / "receipts").mkdir(parents=True, exist_ok=True)
+    (ctx.work / "receipts" / "reload.json").write_text("{}")
+    rng = np.random.default_rng(22)
+    shapes = cap.head_shapes(8, 4)
+
+    def params(seed):
+        g = np.random.default_rng(seed)
+        return {k: g.normal(size=s).astype(np.float32) for k, s in shapes.items()}
+
+    cap.save_head(params(1), ctx.out / "head_adapter", {"base_revision": cap.pp.MODEL_REVISION, "threshold": 0.5})
+    cap.write_json(ctx.out / "selection.json", {"C": {"threshold": 0.5, "selected_epoch": 3, "config": cap.HEAD_CONFIG}})
+    sources = tmp_path / "chips"
+    sources.mkdir()
+    for i in range(6):
+        chip = _chip(40 + i)
+        with h5py.File(sources / f"site{i}_2020.h5", "w") as handle:
+            handle["S2"], handle["S2_valid"], handle["label"] = chip["S2"], chip["S2_valid"], chip["label"]
+            handle.attrs["group_id"] = f"site{i}"
+    features = {}
+
+    def encode(_pipe, x):
+        key = float(np.nanmean(x))
+        features.setdefault(key, rng.normal(size=(1, 8, 8, 8)).astype(np.float32))
+        return features[key]
+
+    def probabilities(_torch, head, x, device="cpu"):
+        margin = cap.head_forward_numpy(head, np.asarray(x, dtype=np.float32))
+        up = np.kron(margin, np.ones((16, 16)))
+        return 1.0 / (1.0 + np.exp(-up.astype(np.float64)))
+
+    real_load = cap.load_head
+
+    def load(path, **kwargs):
+        loaded, manifest = real_load(path, **kwargs)
+        if corrupt_reload and path.name == "byod_head_adapter":
+            loaded = corrupt_reload(dict(loaded))
+        return loaded, manifest
+
+    def train(*_args, **_kwargs):
+        return params(2), [{"epoch": e, "fit_loss": 1.0, "dev_loss": 1.0, "dev_f1": 0.5} for e in (1, 2, 3)]
+
+    monkeypatch.setattr(cap, "_torch_setup", lambda *a, **k: None)
+    monkeypatch.setattr(cap, "load_prithvi", lambda _ctx: object())
+    monkeypatch.setattr(cap, "encode", encode)
+    monkeypatch.setattr(cap, "head_probabilities", probabilities)
+    monkeypatch.setattr(cap, "_load_head", lambda _torch, state: {k: np.asarray(v) for k, v in state.items()})
+    monkeypatch.setattr(cap, "train_head", train)
+    monkeypatch.setattr(cap, "load_head", load)
+    return ctx, sources
+
+
+def test_issue_22_m3_byod_adaptation_succeeds_and_records_head_serialization_parity(tmp_path, monkeypatch):
+    ctx, sources = _byod_standins(tmp_path, monkeypatch)
+    assert cap.main(["--root", str(ctx.root), "--stage", "byod", "--input", str(sources)]) == 0
+    summary = json.loads((ctx.out / "byod" / "byod_summary.json").read_text(encoding="utf-8"))
+    parity = summary["adaptation"]["head_serialization_parity"]
+    assert parity["passed"] and parity["max_abs_difference"] == 0.0 and "same process" in parity["check"]
+    assert "reload_max_abs_difference" not in summary["adaptation"]  # relabelled: never presented as the canonical reload
+    assert (ctx.out / "byod_results.zip").is_file() and (ctx.work / "receipts" / "byod.json").is_file()
+    assert (ctx.out / "byod" / "byod_head_adapter" / cap.ARTIFACT_WEIGHTS).is_file()
+
+
+@pytest.mark.parametrize("corrupt", [
+    lambda p: {**p, "conv2.bias": p["conv2.bias"] + np.array([0.0, 5.0], np.float32)},  # shifts the rice margin
+    lambda p: {**p, "conv2.bias": np.full_like(p["conv2.bias"], np.nan)},
+])
+def test_issue_22_m3_a_parity_failure_stops_byod_without_a_receipt_bundle_or_refusal(tmp_path, monkeypatch, capsys,
+                                                                                        corrupt):
+    ctx, sources = _byod_standins(tmp_path, monkeypatch, corrupt_reload=corrupt)
+    with pytest.raises(cap.ReloadParityError, match="head-serialization parity"):
+        cap.main(["--root", str(ctx.root), "--stage", "byod", "--input", str(sources)])
+    assert "Refused:" not in capsys.readouterr().out  # exit 1 with a traceback, not the learner refusal path
+    assert not (ctx.out / "byod_results.zip").exists() and not (ctx.work / "receipts" / "byod.json").exists()
+    assert not (ctx.out / "byod" / "byod_summary.json").exists()
+    assert not (ctx.out / "byod" / "byod_head_adapter").exists()  # the unverified adapter is discarded
+    failure = json.loads((ctx.out / "byod" / "byod_verification_failure.json").read_text(encoding="utf-8"))
+    assert failure["passed"] is False
+
+
+def test_issue_22_m3_learner_text_describes_the_check_as_head_serialization_parity():
+    byod = _markdown_with("## 12. Optional: bring your own chips")
+    assert "head-serialization parity" in byod and "no `byod_results.zip` is written" in byod
+    assert "reloaded from files." not in byod and "does not rebuild the base model" in byod
+    trouble = _markdown_with("## Troubleshooting")
+    assert "head-serialization parity" in trouble and "not a `Refused:` message" in trouble

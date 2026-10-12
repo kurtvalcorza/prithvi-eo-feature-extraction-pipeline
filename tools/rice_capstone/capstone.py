@@ -1640,6 +1640,58 @@ def bundle_results(ctx: Context) -> dict[str, Any]:
 # ---- BYOD -------------------------------------------------------------------------------------------
 
 
+class ReloadParityError(RuntimeError):
+    """The adapted BYOD head did not reproduce its own scores after being saved and reloaded. A software or environment
+    fault, not a problem with the learner's files, so it is deliberately not a ChipError: it is never printed as an
+    input refusal (`Refused:`, exit 3) and it stops the stage before any success receipt or result bundle exists."""
+
+
+HEAD_SERIALIZATION_SCOPE = (
+    "head-serialization parity: the adapted head's weights are saved to files, read back and verified in the same "
+    "process, then re-applied to the cached encoder features of the test chips and compared with the scores before "
+    "saving. It does not rebuild the base model, recompute features or start a fresh process, so it is not the "
+    "canonical fresh-process, input-to-prediction reload of Section 10"
+)
+
+
+def head_serialization_parity(before: np.ndarray, after: np.ndarray, threshold: float,
+                              tolerance: float = RELOAD_TOLERANCE) -> dict[str, Any]:
+    """Compare the adapted head's test scores before saving with the scores of the head read back from its files.
+    Passing needs a finite maximum absolute difference within `tolerance` and identical binary decisions at
+    `threshold`. Returns the record; `require_head_serialization_parity` raises when it fails."""
+    before = np.asarray(before, dtype=np.float64)
+    after = np.asarray(after, dtype=np.float64)
+    if before.shape != after.shape or before.size == 0:
+        raise ReloadParityError(f"head-serialization parity: score shapes differ ({before.shape} vs {after.shape})")
+    with np.errstate(invalid="ignore"):
+        difference = float(np.abs(after - before).max())
+    finite = bool(np.isfinite(before).all() and np.isfinite(after).all() and math.isfinite(difference))
+    identical = bool(np.array_equal(before >= threshold, after >= threshold))
+    return {
+        "check": HEAD_SERIALIZATION_SCOPE, "max_abs_difference": difference if finite else None,
+        "finite": finite, "tolerance": tolerance, "threshold": threshold, "binary_decisions_identical": identical,
+        "passed": finite and difference <= tolerance and identical,
+    }
+
+
+def require_head_serialization_parity(record: Mapping[str, Any]) -> None:
+    if record["passed"]:
+        return
+    reasons = []
+    if not record["finite"]:
+        reasons.append("a score is not finite")
+    elif record["max_abs_difference"] > record["tolerance"]:
+        reasons.append(f"max |score difference| {record['max_abs_difference']:.3g} exceeds {record['tolerance']}")
+    if not record["binary_decisions_identical"]:
+        reasons.append(f"rice/non-rice decisions at threshold {record['threshold']} differ")
+    raise ReloadParityError(
+        "BYOD adaptation failed verification (head-serialization parity): " + "; ".join(reasons) + ". The adapted "
+        "head was discarded and no BYOD result bundle was written. This is a software or environment fault, not a "
+        "problem with your files: keep the stage log (byod.log in the run directory) and report it; running the "
+        "cell again starts from a clean BYOD folder."
+    )
+
+
 def has_labelled_pixels(label: np.ndarray | None) -> bool:
     """True when a label exists and at least one pixel is 0 or 1; an all-255 mask can only be predicted, not adapted on
     (a training batch of ignored targets alone would make the mean cross-entropy NaN)."""
@@ -1816,14 +1868,18 @@ def stage_byod(ctx: Context, sources: Sequence[Path]) -> None:
             save_head({k: state[k] for k in HEAD_TENSORS}, out / "byod_head_adapter", meta)
             reloaded, _m = load_head(out / "byod_head_adapter")
             again = head_probabilities(torch, _load_head(torch, reloaded), np.stack([features[c] for c in split["test"]]))
+            parity = head_serialization_parity(test_probs, again, sel["threshold"])
+            if not parity["passed"]:  # issue #22 M3: enforced before any summary, bundle or receipt is written
+                shutil.rmtree(out / "byod_head_adapter")
+                write_json(out / "byod_verification_failure.json", parity)
+                require_head_serialization_parity(parity)
             summary["adaptation"] = {
                 "split": split, "selected_epoch": select_epoch(curve), "threshold": sel["threshold"],
                 "test_all_non_rice": pooled([np.zeros_like(p) for p in test_probs], test_labels, 0.5),
                 "test_canonical_head": pooled([canonical[c] for c in split["test"]], test_labels,
                                               manifest["threshold"]),
                 "test_adapted_head": pooled(list(test_probs), test_labels, sel["threshold"]),
-                "reload_max_abs_difference": float(np.abs(again - test_probs).max()),
-                "reload_binary_identical": bool(np.array_equal(again >= sel["threshold"], test_probs >= sel["threshold"])),
+                "head_serialization_parity": parity,
             }
     else:
         summary["adaptation"] = f"not run: needs at least {BYOD_MIN_ADAPT_CHIPS} labelled chips"
