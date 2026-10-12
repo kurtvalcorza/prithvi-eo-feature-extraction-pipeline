@@ -1754,7 +1754,7 @@ def stage_byod(ctx: Context, sources: Sequence[Path]) -> None:
         except ChipError as exc:
             problems.append(str(exc))
     if problems:
-        raise ChipError("BYOD validation refused the upload:\n  " + "\n  ".join(problems))
+        raise ChipError(f"{len(problems)} of {len(files)} file(s) failed validation:\n  " + "\n  ".join(problems))
     selection = read_json(ctx.out / "selection.json")
     params, manifest = load_head(ctx.out / "head_adapter", expect={"base_revision": pp.MODEL_REVISION})
     pipe = load_prithvi(ctx)
@@ -1905,6 +1905,9 @@ def start_stage(ctx: Context, stage: str) -> None:
             write_json(verification, record)
 
 
+REFUSED_EXIT = 3  # an input refused with a learner-facing message (argparse already uses 2 for usage errors)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, required=True)
@@ -1916,7 +1919,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     ctx = Context(args.root)
     start_stage(ctx, args.stage)
     if args.stage == "byod":
-        stage_byod(ctx, args.input)
+        try:
+            stage_byod(ctx, args.input)
+        except ChipError as exc:  # the learner's input was refused, not a crash: one message, no traceback (RICE-m8)
+            print(f"Refused: {exc}", flush=True)
+            return REFUSED_EXIT
     else:
         STAGES[args.stage](ctx)
     return 0

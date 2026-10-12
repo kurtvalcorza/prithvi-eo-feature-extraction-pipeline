@@ -836,3 +836,101 @@ def test_review_findings_2026_10_11_learner_text():
     assert "Run this cell" in byod and "do not need to Run all again" in byod  # S2
     ids = [c["id"] for c in notebook["cells"]]
     assert ids[:3] == ["rice-00", "rice-problem", "rice-01"] and ids[-1] == "rice-35"  # earlier cell ids are kept
+
+
+# ---------------------------------------------------------------------------------------- RICE-m8 (2026-10-12 browser run)
+
+
+def _byod_ready(tmp_path: Path):
+    """A run directory whose BYOD prerequisites are met, holding outputs of an earlier BYOD attempt."""
+    ctx = cap.Context(tmp_path)
+    (ctx.work / "receipts").mkdir(parents=True, exist_ok=True)
+    (ctx.work / "receipts" / "reload.json").write_text("{}")
+    (ctx.out / "byod").mkdir()
+    (ctx.out / "byod" / "byod_canonical_head.csv").write_text("chip\nold\n")
+    (ctx.out / "byod_results.zip").write_bytes(b"old")
+    return ctx
+
+
+def test_review_rice_m8_a_refused_byod_upload_is_one_message_without_a_traceback(tmp_path, monkeypatch, capsys):
+    # The browser run of a533d55b refused a reflectance x 10 000 upload correctly, but the cell showed the stage's
+    # traceback twice and a red RuntimeError. The refusal is now one message and a distinct exit code.
+    h5py = pytest.importorskip("h5py")
+    ctx = _byod_ready(tmp_path)
+    chip = _chip(3)
+    path = tmp_path / "rice_byod_MALFORMED_reflectance_x10000_2019.h5"
+    with h5py.File(path, "w") as handle:
+        handle["S2"] = chip["S2"] * 10000.0
+        handle["S2_valid"] = chip["S2_valid"]
+        handle["label"] = chip["label"]
+    monkeypatch.setattr(cap, "_torch_setup", lambda *a, **k: None)  # CI has no torch; refusal precedes any model
+    code = cap.main(["--root", str(tmp_path), "--stage", "byod", "--input", str(path)])
+    out = capsys.readouterr()
+    text = out.out + out.err
+    assert code == cap.REFUSED_EXIT == 3 and code != 2  # 2 is argparse's usage-error code
+    assert text.count("Refused:") == 1 and "Traceback" not in text
+    assert text.count(f"{path.name}: S2 maximum") == 1 and "multiply by 0.0001" in text
+    assert not (ctx.out / "byod").exists() and not (ctx.out / "byod_results.zip").exists()  # nothing stale to show
+    assert not (ctx.work / "receipts" / "byod.json").exists()
+
+
+def test_review_rice_m8_genuine_byod_failures_still_raise(tmp_path, monkeypatch):
+    _byod_ready(tmp_path)
+
+    def broken(*_args, **_kwargs):
+        raise KeyError("a bug, not an input refusal")
+
+    monkeypatch.setattr(cap, "stage_byod", broken)
+    with pytest.raises(KeyError):
+        cap.main(["--root", str(tmp_path), "--stage", "byod", "--input", str(tmp_path / "x.h5")])
+
+
+def _run_stage(tmp_path: Path, exit_code: int, lines: list[str]):
+    """The notebook's own run_stage, driving a stand-in capstone.py that prints `lines` and exits with `exit_code`."""
+    import os
+    import subprocess
+
+    cell = next(_source(c) for c in _notebook()["cells"] if "def run_stage(" in _source(c))
+    tree = ast.parse(cell)
+    wanted = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name == "run_stage")
+              or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "REFUSED_EXIT")]
+    assert len(wanted) == 2
+    (tmp_path / "capstone.py").write_text(
+        "import sys\n" + "".join(f"print({line!r})\n" for line in lines) + f"sys.exit({exit_code})\n")
+    namespace = {"ROOT": tmp_path, "PYTHON": Path(sys.executable), "ENV": dict(os.environ), "subprocess": subprocess}
+    exec(compile(ast.Module(body=wanted, type_ignores=[]), "run_stage", "exec"), namespace)
+    return namespace["run_stage"]
+
+
+def test_review_rice_m8_run_stage_streams_each_line_once_and_separates_refusals(tmp_path, capsys):
+    refusal = ["Refused: 1 of 1 file(s) failed validation:", "  bad_2019.h5: S2 maximum 8608.5 exceeds 2.0"]
+    run_stage = _run_stage(tmp_path, 3, refusal)
+    assert run_stage("byod", "--input", "bad_2019.h5", refusal_ok=True) is False
+    shown = capsys.readouterr().out
+    assert shown.count("Refused:") == 1 and shown.count("S2 maximum") == 1 and "Traceback" not in shown
+    with pytest.raises(RuntimeError, match="byod failed with exit 3"):  # without refusal_ok a refusal still stops
+        run_stage("byod")
+    capsys.readouterr()
+
+    crash = ["Traceback (most recent call last):", "KeyError: 'x'", "x" * 2500]
+    run_stage = _run_stage(tmp_path, 1, crash)
+    with pytest.raises(RuntimeError, match="prepare failed with exit 1"):  # every other failure still stops Run all
+        run_stage("prepare", refusal_ok=True)
+    shown = capsys.readouterr().out
+    assert shown.count("Traceback (most recent call last):") == 1  # streamed once; the log tail is not re-printed
+    assert "x" * 2500 not in shown and "1 over-long line(s) not shown" in shown
+    assert "x" * 2500 in (tmp_path / "prepare.log").read_text(encoding="utf-8")
+    assert _run_stage(tmp_path, 0, ["ok"])("report") is True
+
+
+def test_review_rice_m8_the_byod_cell_shows_results_only_after_a_completed_stage():
+    cells = [(c["cell_type"], _source(c)) for c in _notebook()["cells"]]
+    byod = next(text for kind, text in cells if kind == "code" and "USE_BYOD = " in text)
+    branch = byod.split("if run_stage('byod'", 1)
+    assert len(branch) == 2 and "refusal_ok=True" in branch[1].split("\n", 1)[0]
+    accepted, refused = branch[1].split("\n    else:", 1)
+    for display_call in ("show_table(", "byod_summary.json", "FileLink("):
+        assert display_call in accepted and display_call not in branch[0] and display_call not in refused
+    assert "run this cell again (no Run all needed)" in refused
+    trouble = next(text for kind, text in cells if kind == "markdown" and text.startswith("## Troubleshooting"))
+    assert "`Refused:`" in trouble and "you do not need to Run all again" in trouble
