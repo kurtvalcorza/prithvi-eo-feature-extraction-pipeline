@@ -665,14 +665,16 @@ def test_review_knd4_the_run_states_its_own_answer_with_its_evidence_level():
 
     lines = "\n".join(cap.answer_lines([row("A all-non-rice", 0.0), row("B LightGBM", 0.758),
                                          row("C frozen Prithvi + head", 0.601)]))
-    assert "did not map rice better than the spectral-temporal LightGBM baseline (B, F1 0.758)" in lines
+    assert "did not reach a higher pooled rice F1 than the spectral-temporal LightGBM pipeline (B, F1 0.758)" in lines
     assert "(C, F1 0.601)" in lines and "(A) scored F1 0.000" in lines and "C-FT" not in lines
     assert "**Evidence level:**" in lines and "nationally" in lines and "precision undefined" in lines
     lines = "\n".join(cap.answer_lines([row("A all-non-rice", 0.0), row("B LightGBM", 0.5),
                                          row("C frozen Prithvi + head", 0.7), row("C-FT fine-tuned (opt-in)", 0.6)]))
-    assert "(C, F1 0.700) mapped rice better than" in lines and "(C-FT) scored F1 0.600" in lines
-    assert "did not" not in cap.answer_lines([row("A all-non-rice", 0.0), row("B LightGBM", None),
-                                             row("C frozen Prithvi + head", 0.1)])[-3]
+    assert "(C, F1 0.700) reached a higher pooled rice F1 than" in lines and "(C-FT) scored F1 0.600" in lines
+    verdict = next(line for line in cap.answer_lines([row("A all-non-rice", 0.0), row("B LightGBM", None),
+                                                       row("C frozen Prithvi + head", 0.1)])
+                   if line.startswith("**Answer"))
+    assert "did not" not in verdict
 
 
 def test_csv_and_zip_round_trips_with_tamper_detection(tmp_path):
@@ -934,3 +936,470 @@ def test_review_rice_m8_the_byod_cell_shows_results_only_after_a_completed_stage
     assert "run this cell again (no Run all needed)" in refused
     trouble = next(text for kind, text in cells if kind == "markdown" and text.startswith("## Troubleshooting"))
     assert "`Refused:`" in trouble and "you do not need to Run all again" in trouble
+
+
+# ---------------------------------------------------------------------------------------- issue #22 (peer review, 2026-10-12)
+
+
+def _cells() -> list[tuple[str, str]]:
+    return [(c["cell_type"], _source(c)) for c in _notebook()["cells"]]
+
+
+def _markdown_with(anchor: str) -> str:
+    return next(text for kind, text in _cells() if kind == "markdown" and anchor in text)
+
+
+def test_issue_22_m1_the_frame_activity_is_a_fixed_recipe_comparison_without_causal_claims():
+    section = _markdown_with("## 6. Change one thing")
+    assert "fixed-recipe, development-only comparison" in section and "not an equally tuned comparison" in section
+    assert "How far below T = 4" not in section and "match it or exceed it" in section  # neutral prediction prompt
+    after = _markdown_with("**Observe and explain:**")
+    assert "more robust than its size" not in after and "supports the season-based explanation" not in after
+    assert ("Under a fixed training recipe and the epoch count and threshold selected for the four-frame system"
+            .lower() in after.lower())
+    assert "observation coverage" in after and "settings better suited to the four-frame system" in after
+    conclusion = _markdown_with("## 11. Conclude with evidence")
+    assert "consistent with rice being a seasonal signal" not in conclusion
+    source = (TOOLS / "capstone.py").read_text(encoding="utf-8")
+    assert '"comparison": ACTIVITY_SCOPE' in source and "not an equally tuned comparison" in cap.ACTIVITY_SCOPE
+    assert "without claiming a cause" in source
+    spec = (ROOT / "docs" / "philippines-rice-mapping-capstone-spec.md").read_text(encoding="utf-8")
+    assert "Demonstrates that rice is identified by its season" not in spec and "fixed-recipe" in spec
+
+
+@pytest.mark.parametrize("case, after, reason", [
+    ("excessive difference", lambda p: p + 0.01, "exceeds"),
+    ("non-finite difference", lambda p: np.where(np.arange(p.size).reshape(p.shape) == 0, np.nan, p), "not finite"),
+    ("binary disagreement", lambda p: np.where(np.isclose(p, 0.5), 0.5 - 1e-6, p), "decisions"),
+])
+def test_issue_22_m3_head_serialization_parity_rejects_each_failure_mode(case, after, reason):
+    before = np.linspace(0.0, 1.0, 2 * 4 * 4).reshape(2, 4, 4)
+    before[0, 0, 1] = 0.5  # exactly at the threshold, so a 1e-6 change flips the decision but stays within tolerance
+    record = cap.head_serialization_parity(before, after(before), 0.5)
+    assert record["passed"] is False, case
+    with pytest.raises(cap.ReloadParityError, match=reason) as raised:
+        cap.require_head_serialization_parity(record)
+    assert not isinstance(raised.value, cap.ChipError)  # never a learner "Refused:" input refusal (exit 3)
+    assert "not a problem with your files" in str(raised.value) and "no BYOD result bundle" in str(raised.value)
+
+
+def test_issue_22_m3_head_serialization_parity_accepts_identical_scores_and_names_its_scope():
+    before = np.random.default_rng(0).uniform(size=(2, 8, 8))
+    record = cap.head_serialization_parity(before, before + 1e-7, 0.5)
+    assert record["passed"] and record["finite"] and record["binary_decisions_identical"]
+    assert record["max_abs_difference"] == pytest.approx(1e-7) and record["tolerance"] == cap.RELOAD_TOLERANCE
+    assert "head-serialization parity" in record["check"] and "not the canonical fresh-process" in record["check"]
+    cap.require_head_serialization_parity(record)  # passes silently
+
+
+def _byod_standins(tmp_path: Path, monkeypatch, *, corrupt_reload=None):
+    """CPU stand-ins for the model parts of stage_byod (no torch): random 8-channel 'encoder features', a tiny head
+    evaluated with head_forward_numpy, and a 'trained' head drawn from a seeded generator. Real code paths: chip
+    validation, the site split, threshold selection, save_head/load_head (safetensors), GeoTIFFs, the bundle."""
+    h5py = pytest.importorskip("h5py")
+    pytest.importorskip("safetensors")
+    pytest.importorskip("tifffile")
+    ctx = cap.Context(tmp_path / "run")
+    (ctx.work / "receipts").mkdir(parents=True, exist_ok=True)
+    (ctx.work / "receipts" / "reload.json").write_text("{}")
+    rng = np.random.default_rng(22)
+    shapes = cap.head_shapes(8, 4)
+
+    def params(seed):
+        g = np.random.default_rng(seed)
+        return {k: g.normal(size=s).astype(np.float32) for k, s in shapes.items()}
+
+    cap.save_head(params(1), ctx.out / "head_adapter", {"base_revision": cap.pp.MODEL_REVISION, "threshold": 0.5})
+    cap.write_json(ctx.out / "selection.json", {"C": {"threshold": 0.5, "selected_epoch": 3, "config": cap.HEAD_CONFIG}})
+    sources = tmp_path / "chips"
+    sources.mkdir()
+    for i in range(6):
+        chip = _chip(40 + i)
+        with h5py.File(sources / f"site{i}_2020.h5", "w") as handle:
+            handle["S2"], handle["S2_valid"], handle["label"] = chip["S2"], chip["S2_valid"], chip["label"]
+            handle.attrs["group_id"] = f"site{i}"
+    features = {}
+
+    def encode(_pipe, x):
+        key = float(np.nanmean(x))
+        features.setdefault(key, rng.normal(size=(1, 8, 8, 8)).astype(np.float32))
+        return features[key]
+
+    def probabilities(_torch, head, x, device="cpu"):
+        margin = cap.head_forward_numpy(head, np.asarray(x, dtype=np.float32))
+        up = np.kron(margin, np.ones((16, 16)))
+        return 1.0 / (1.0 + np.exp(-up.astype(np.float64)))
+
+    real_load = cap.load_head
+
+    def load(path, **kwargs):
+        loaded, manifest = real_load(path, **kwargs)
+        if corrupt_reload and path.name == "byod_head_adapter":
+            loaded = corrupt_reload(dict(loaded))
+        return loaded, manifest
+
+    def train(*_args, **_kwargs):
+        return params(2), [{"epoch": e, "fit_loss": 1.0, "dev_loss": 1.0, "dev_f1": 0.5} for e in (1, 2, 3)]
+
+    monkeypatch.setattr(cap, "_torch_setup", lambda *a, **k: None)
+    monkeypatch.setattr(cap, "load_prithvi", lambda _ctx: object())
+    monkeypatch.setattr(cap, "encode", encode)
+    monkeypatch.setattr(cap, "head_probabilities", probabilities)
+    monkeypatch.setattr(cap, "_load_head", lambda _torch, state: {k: np.asarray(v) for k, v in state.items()})
+    monkeypatch.setattr(cap, "train_head", train)
+    monkeypatch.setattr(cap, "load_head", load)
+    return ctx, sources
+
+
+def test_issue_22_m3_byod_adaptation_succeeds_and_records_head_serialization_parity(tmp_path, monkeypatch):
+    ctx, sources = _byod_standins(tmp_path, monkeypatch)
+    assert cap.main(["--root", str(ctx.root), "--stage", "byod", "--input", str(sources)]) == 0
+    summary = json.loads((ctx.out / "byod" / "byod_summary.json").read_text(encoding="utf-8"))
+    parity = summary["adaptation"]["head_serialization_parity"]
+    assert parity["passed"] and parity["max_abs_difference"] == 0.0 and "same process" in parity["check"]
+    assert "reload_max_abs_difference" not in summary["adaptation"]  # relabelled: never presented as the canonical reload
+    assert (ctx.out / "byod_results.zip").is_file() and (ctx.work / "receipts" / "byod.json").is_file()
+    assert (ctx.out / "byod" / "byod_head_adapter" / cap.ARTIFACT_WEIGHTS).is_file()
+
+
+@pytest.mark.parametrize("corrupt", [
+    lambda p: {**p, "conv2.bias": p["conv2.bias"] + np.array([0.0, 5.0], np.float32)},  # shifts the rice margin
+    lambda p: {**p, "conv2.bias": np.full_like(p["conv2.bias"], np.nan)},
+])
+def test_issue_22_m3_a_parity_failure_stops_byod_without_a_receipt_bundle_or_refusal(tmp_path, monkeypatch, capsys,
+                                                                                        corrupt):
+    ctx, sources = _byod_standins(tmp_path, monkeypatch, corrupt_reload=corrupt)
+    with pytest.raises(cap.ReloadParityError, match="head-serialization parity"):
+        cap.main(["--root", str(ctx.root), "--stage", "byod", "--input", str(sources)])
+    assert "Refused:" not in capsys.readouterr().out  # exit 1 with a traceback, not the learner refusal path
+    assert not (ctx.out / "byod_results.zip").exists() and not (ctx.work / "receipts" / "byod.json").exists()
+    assert not (ctx.out / "byod" / "byod_summary.json").exists()
+    assert not (ctx.out / "byod" / "byod_head_adapter").exists()  # the unverified adapter is discarded
+    failure = json.loads((ctx.out / "byod" / "byod_verification_failure.json").read_text(encoding="utf-8"))
+    assert failure["passed"] is False
+
+
+def test_issue_22_m3_learner_text_describes_the_check_as_head_serialization_parity():
+    byod = _markdown_with("## 12. Optional: bring your own chips")
+    assert "head-serialization parity" in byod and "no `byod_results.zip` is written" in byod
+    assert "reloaded from files." not in byod and "does not rebuild the base model" in byod
+    trouble = _markdown_with("## Troubleshooting")
+    assert "head-serialization parity" in trouble and "not a `Refused:` message" in trouble
+
+
+def test_issue_22_m2_label_lineage_is_explicit_and_the_recipe_is_checked(tmp_path, monkeypatch):
+    lineage = gen.DATA_MANIFEST["label_lineage"]
+    assert lineage["recipe_sha256"] == cap.LABEL_RECIPE_SHA256
+    assert lineage["code_map"] == {"1": 1, "2": 1, "3": 1, "0": 0, "other": "build fails"}
+    assert "same year" in lineage["layer"] and "composite" in lineage["layer"] and "nearest" in lineage["resampling"]
+    assert "976530ffa324f0d701051d757214a5dca977621d5a3e752b4f11bac0dbf7f032" in lineage["rebuild_kit"]
+    labels = _markdown_with("## 2. Inspect the chips")
+    for phrase in ("annual paddy-rice occurrence according to a published map", "same year", "nearest neighbour",
+                   "water and sea", "each** side of every class edge", "`label ≠ 255`", "7adf68fe"):
+        assert phrase in labels, phrase
+    markdown = "\n".join(text for kind, text in _cells() if kind == "markdown")
+    assert "20 m band along class edges" not in markdown and "where rice is grown" not in markdown
+    assert "not every exported pixel" in _markdown_with("### Problem statement")
+    licences = _markdown_with("## Data, model, attribution and licences")
+    assert "recipe-kit.zip" in licences and "not the four-year composite" in licences
+
+    def index(rows):
+        data = "".join(json.dumps(r) + "\n" for r in rows).encode("utf-8")
+        (tmp_path / "INDEX.jsonl").write_bytes(data)
+        monkeypatch.setattr(cap, "INDEX_SHA256", hashlib.sha256(data).hexdigest())
+
+    row = {"group_id": "ph_1_2", "year": 2020, "recipe_sha256": cap.LABEL_RECIPE_SHA256}
+    index([row])
+    assert cap.read_index(tmp_path) == [row]
+    index([row, {**row, "group_id": "ph_3_4", "recipe_sha256": "0" * 64}])
+    with pytest.raises(ValueError, match="label recipes"):
+        cap.read_index(tmp_path)
+
+
+def test_issue_22_s1_s4_s5_whole_pipeline_claims_spatial_detail_and_responsive_answers():
+    def row(system, f1):
+        return {"system": system, "f1": f1, "iou": None, "precision": None, "recall": None}
+
+    answer = "\n".join(cap.answer_lines([row("A all-non-rice", 0.0), row("B LightGBM", 0.758),
+                                         row("C frozen Prithvi + head", 0.601)]))
+    assert "two whole pipelines" in answer and "does not isolate the contribution of foundation-model pretraining" in answer
+    assert "8 x 8 logit grid bilinearly upsampled" in answer and "not independently established field accuracy" in answer
+    assert "operational requirements" in answer and "mapped rice better" not in answer  # S4: three separate claims
+    opening = _markdown_with("**Driving question:**")
+    assert "whole pipelines" in opening
+    problem = _markdown_with("### Problem statement")
+    assert "(1) **Signal:**" in problem and "(3) **Practical usefulness:**" in problem
+    assert "addresses the first two questions, not the third" in problem
+    sec4 = _markdown_with("## 4. Trace how Prithvi's input")
+    assert "to hide the mismatch" not in sec4 and "domain shifts" in sec4
+    sec5 = _markdown_with("## 5. Train head C")
+    assert "**pixel spacing**" in sec5 and "**resolved detail**" in sec5 and "no high-resolution skip connection" in sec5
+    assert "not of every Prithvi-based segmentation design" in sec5
+    prepare = _markdown_with("**Checkpoint:** name one month range")
+    assert "flatter non-rice pixel" not in prepare and "single examples" in prepare and "one peak, none" in prepare
+    ids = {c["id"]: _source(c) for c in _notebook()["cells"]}
+    assert "show_source('select_frames', 'prithvi_input')" in ids["rice-source-input"]
+    assert "show_source('_head_module')" in ids["rice-source-head"]
+
+
+def test_issue_22_s2_spatial_audit_measures_separation_instead_of_assuming_it():
+    def chip(cid, site, role, x, y, year=2020):
+        return {"id": cid, "site": site, "year": year, "role": role, "x_min": x, "y_max": y}
+
+    audit = cap.spatial_audit([
+        chip("a", "s1", "fit", 0, 0), chip("b", "s2", "development", 2560, 0),  # touching across roles
+        chip("c", "s3", "validation", 1000, 0),  # overlaps a
+        chip("d", "s1", "development", 0, 0, 2021),  # site s1 in two roles and two years
+        chip("e", "s5", "fit", 100_000, 0),
+    ])
+    assert audit["unique_sites"] == 4 and audit["sites_with_repeated_years"] == 1
+    assert audit["sites_in_more_than_one_role"] == ["s1"]
+    assert ["a", "c"] in audit["cross_role_overlapping_footprints"]
+    assert ["a", "b"] in audit["cross_role_touching_footprints"]
+    assert audit["min_cross_role_distance_m"]["development-fit"] == 0.0
+    assert cap.footprint_gap({"x_min": 0, "y_max": 0}, {"x_min": 5120, "y_max": 0}) == (2560.0, False)
+    source = (TOOLS / "capstone.py").read_text(encoding="utf-8")
+    prepare = source[source.index("def stage_prepare"):source.index("def _with_label_two")]
+    assert 'ctx.out / "spatial_audit.json"' in prepare
+    sec3 = _markdown_with("## 3. Predict, declare the protocol")
+    assert "keep neighbouring chips out of both roles" not in sec3 and "does not by itself guarantee distance" in sec3
+    baseline = next(text for kind, text in _cells() if kind == "code" and "run_stage('baseline')" in text)
+    assert baseline.startswith("show_record('spatial_audit.json')")
+
+
+def test_issue_22_s2_byod_grouping_flags_unverified_sites_duplicates_and_overlapping_footprints(tmp_path, monkeypatch):
+    h5py = pytest.importorskip("h5py")
+    ctx, sources = _byod_standins(tmp_path, monkeypatch)
+    (sources / "site0_2020.h5").rename(sources / "copy_a_2020.h5")
+    import shutil
+
+    shutil.copy(sources / "copy_a_2020.h5", sources / "copy_b_2021.h5")  # a renamed duplicate
+    with h5py.File(sources / "copy_b_2021.h5", "a") as handle:
+        handle.attrs["group_id"] = "elsewhere"
+    with h5py.File(sources / "site1_2020.h5", "a") as handle:
+        del handle.attrs["group_id"]  # falls back to the file name
+    assert cap.main(["--root", str(ctx.root), "--stage", "byod", "--input", str(sources)]) == 0
+    summary = json.loads((ctx.out / "byod" / "byod_summary.json").read_text(encoding="utf-8"))
+    assert summary["grouping"]["duplicate_content"] == [["copy_a_2020", "copy_b_2021"]]
+    assert summary["grouping"]["site_ids_from_file_name_unverified"] == ["site1_2020"]
+    assert summary["adaptation"].startswith("not run: chips with identical content")
+    assert (ctx.out / "byod_results.zip").is_file()  # prediction still completes
+
+    chips = {f"c{i}": {"S2": np.full((1,), i, np.float32), "S2_valid": np.ones(1, np.uint8), "label": None,
+                       "attrs": {"x_min": 1000.0 * i, "y_max": 0.0, "group": f"g{i}"}} for i in range(2)}
+    check = cap.byod_grouping_check(["c0", "c1"], chips, {"c0": "g0", "c1": "g1"})
+    assert check["overlapping_footprints_with_different_sites"] == [["c0", "c1"]] and not check["duplicate_content"]
+
+
+def test_issue_22_s2_successful_byod_adaptation_records_its_spatial_audit(tmp_path, monkeypatch):
+    ctx, sources = _byod_standins(tmp_path, monkeypatch)
+    assert cap.main(["--root", str(ctx.root), "--stage", "byod", "--input", str(sources)]) == 0
+    summary = json.loads((ctx.out / "byod" / "byod_summary.json").read_text(encoding="utf-8"))
+    audit = summary["adaptation"]["spatial_audit"]
+    assert audit["chips"] == 6 and audit["unique_sites"] == 6 and audit["georeferenced_chips"] == 0
+    assert summary["grouping"]["site_ids_from_file_name_unverified"] == []
+
+
+def test_issue_22_s3_observation_support_partitions_the_primary_scored_pixels():
+    valid = np.ones((24, 4, 4), np.uint8)
+    bins = [0, 6, 12, 18]
+    valid[0, 0, :] = 0
+    valid[6, 0, :2] = 0
+    counts = cap.observed_frame_counts(valid, bins)
+    assert counts.dtype == np.uint8 and counts[0, 0] == 2 and counts[0, 3] == 3 and counts[1, 1] == 4
+    rng = np.random.default_rng(3)
+    labels = [rng.integers(0, 2, (4, 4)).astype(np.uint8) for _ in range(2)]
+    labels[0][3, 3] = 255
+    probs = [rng.uniform(size=(4, 4)) for _ in range(2)]
+    rows = cap.support_rows("C", probs, labels, [counts, counts], 0.5)
+    primary = cap.pooled(probs, labels, 0.5)
+    assert [r["observed_frames"] for r in rows] == [2, 3, 4]  # empty groups are omitted, never reported as zero
+    for key in ("tp", "fp", "fn", "tn"):
+        assert sum(r[key] for r in rows) == primary[key]
+
+
+def _evaluation_standins(tmp_path: Path, monkeypatch):
+    """CPU stand-ins for evaluate -> export -> reload (no torch, LightGBM or matplotlib): two synthetic validation chips
+    with cloud gaps, a fake booster, a tiny numpy head on random 8-channel 'features'. Real code paths: scoring, the
+    observation-support diagnostic, the head artifact, the four GeoTIFFs per chip and the reload checks."""
+    import types
+
+    h5py = pytest.importorskip("h5py")
+    pytest.importorskip("safetensors")
+    pytest.importorskip("tifffile")
+    ctx = cap.Context(tmp_path / "run")
+    (ctx.work / "receipts").mkdir(parents=True, exist_ok=True)
+    ids, chips = ["ph_1_1_2020", "ph_9_9_2021"], {}
+    rng = np.random.default_rng(7)
+    features = {}
+    for i, cid in enumerate(ids):
+        chip = _chip(60 + i)
+        chip["S2_valid"][:, :40, :] = 0  # a cloudy band: fewer observed frames there
+        chip["S2_valid"][3, 40:80, :] = 0
+        chip["S2"][np.broadcast_to(chip["S2_valid"][:, None] == 0, chip["S2"].shape)] = np.nan
+        path = tmp_path / f"{cid}.h5"
+        with h5py.File(path, "w") as handle:
+            handle["S2"], handle["S2_valid"], handle["label"] = chip["S2"], chip["S2_valid"], chip["label"]
+        chips[cid] = {"path": str(path), "role": "validation", "region": "PH-07", "x_min": 614400.0 + 2560 * i,
+                      "y_max": 1095680.0, "frames": cap.select_frames(chip["S2_valid"])}
+        features[cid] = rng.normal(size=(8, 8, 8)).astype(np.float32)
+    cap.write_json(ctx.work / "records.json", {"chips": chips, "roles": {"validation": ids}})
+    head = {k: np.random.default_rng(5).normal(size=s).astype(np.float32) for k, s in cap.head_shapes(8, 4).items()}
+    np.savez(ctx.work / "head_c.npz", **head)
+    np.savez(ctx.work / "features_t4.npz", **features)
+    np.save(ctx.work / "baseline_b_fill.npy", np.zeros(len(cap.M1_NAMES)))
+    cap.write_json(ctx.out / "selection.json", {"B": {"threshold": 0.5}, "C": {"threshold": 0.45, "selected_epoch": 3,
+                                                "config": cap.HEAD_CONFIG}, "activity": {}})
+    for name in ("prepare", "baseline", "train-head", "activity"):
+        (ctx.work / "receipts" / f"{name}.json").write_text("{}")
+
+    class Booster:
+        def __init__(self, **_kwargs):
+            pass
+
+        def predict(self, x, **_kwargs):
+            return 1.0 / (1.0 + np.exp(-np.nan_to_num(x[:, 0]) * 3 + 0.5))
+
+    def probabilities(_torch, state, x, device="cpu"):
+        margin = cap.head_forward_numpy(state, np.asarray(x, dtype=np.float32))
+        return 1.0 / (1.0 + np.exp(-np.kron(margin, np.ones((16, 16))).astype(np.float64)))
+
+    by_input = {}
+
+    def encode(_pipe, x):  # the reload recomputes C's input from the HDF5 chip; map it back to that chip's features
+        key = round(float(np.abs(x).sum()), 3)
+        return features[by_input[key]][None]
+
+    for cid in ids:
+        chip = cap.read_chip_h5(Path(chips[cid]["path"]))
+        by_input[round(float(np.abs(cap.prithvi_input(chip, chips[cid]["frames"]["bins"])[0]).sum()), 3)] = cid
+    monkeypatch.setitem(sys.modules, "lightgbm", types.SimpleNamespace(Booster=Booster))
+    torch_standin = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: True))
+    monkeypatch.setattr(cap, "_torch_setup", lambda *a, **k: torch_standin)
+    monkeypatch.setattr(cap, "_load_head", lambda _torch, state: {k: np.asarray(v) for k, v in state.items()})
+    monkeypatch.setattr(cap, "head_probabilities", probabilities)
+    monkeypatch.setattr(cap, "_evaluation_figures", lambda *a, **k: None)  # matplotlib is not in CI
+    monkeypatch.setattr(cap, "load_prithvi", lambda _ctx: object())
+    monkeypatch.setattr(cap, "encode", encode)
+    return ctx, ids
+
+
+def test_issue_22_s3_evaluate_export_reload_write_and_verify_observation_support(tmp_path, monkeypatch):
+    ctx, ids = _evaluation_standins(tmp_path, monkeypatch)
+    for stage in ("evaluate", "export", "reload"):
+        assert cap.main(["--root", str(ctx.root), "--stage", stage]) == 0, stage
+    metrics = {r["system"]: r for r in cap.read_csv(ctx.out / "metrics.csv")}
+    support = cap.read_csv(ctx.out / "observation_support.csv")
+    assert {r["system"] for r in support} == {"B LightGBM", "C frozen Prithvi + head"}
+    assert {r["observed_frames"] for r in support} == {0, 4}  # never-observed pixels stay scored (count 0)
+    for system in ("B LightGBM", "C frozen Prithvi + head"):
+        for key in ("tp", "fp", "fn", "tn"):
+            assert sum(r[key] for r in support if r["system"] == system) == metrics[system][key], (system, key)
+    verification = json.loads((ctx.out / "verification.json").read_text(encoding="utf-8"))
+    assert verification["observation_support_geotiffs_match"] is True
+    array, geo = cap.read_geotiff(ctx.out / "predictions" / f"{ids[0]}_observed_frames.tif")
+    assert array.dtype == np.uint8 and array.max() <= 4 and geo["epsg"] == cap.EPSG
+    # a tampered support map fails the reload
+    cap.write_geotiff(ctx.out / "predictions" / f"{ids[0]}_observed_frames.tif", np.zeros((128, 128)), nodata=None,
+                      x_min=geo["x_min"], y_max=geo["y_max"])
+    with pytest.raises(RuntimeError, match="reload parity failed"):
+        cap.main(["--root", str(ctx.root), "--stage", "reload"])
+
+
+def test_issue_22_s3_learner_text_explains_the_asymmetry_and_shows_the_diagnostic():
+    sec4 = _markdown_with("## 4. Trace how Prithvi's input")
+    assert "no validity channel" in sec4 and "observed fraction" in sec4
+    sec9 = _markdown_with("## 9. Interpret the result")
+    assert "secondary diagnostic" in sec9 and "primary comparison is unchanged" in sec9
+    figures = next(text for kind, text in _cells() if kind == "code" and "show_figures('validation_*')" in text)
+    assert "observation_support.csv" in figures
+
+
+def _geotiff_tags_by_struct(path: Path) -> dict[int, tuple]:
+    """An independent little reader of a classic TIFF's first IFD (struct only, no tifffile), returning the values of
+    the GeoTIFF tags 33550 (ModelPixelScale), 33922 (ModelTiepoint) and 34735 (GeoKeyDirectory) plus width/length."""
+    import struct
+
+    data = path.read_bytes()
+    order = {b"II": "<", b"MM": ">"}[data[:2]]
+    assert struct.unpack(order + "H", data[2:4])[0] == 42, "not a classic TIFF"
+    ifd = struct.unpack(order + "I", data[4:8])[0]
+    count = struct.unpack(order + "H", data[ifd:ifd + 2])[0]
+    sizes = {3: ("H", 2), 4: ("I", 4), 12: ("d", 8)}
+    out = {}
+    for n in range(count):
+        tag, kind, items, raw = struct.unpack(order + "HHI4s", data[ifd + 2 + 12 * n: ifd + 14 + 12 * n])
+        if tag not in (256, 257, 33550, 33922, 34735) or kind not in sizes:
+            continue
+        code, size = sizes[kind]
+        blob = raw if items * size <= 4 else data[struct.unpack(order + "I", raw)[0]:][:items * size]
+        out[tag] = struct.unpack(order + code * items, blob[:items * size])
+    return out
+
+
+def test_issue_22_m1_geotiff_placement_is_checked_and_read_independently(tmp_path):
+    pytest.importorskip("tifffile")
+    x_min, y_max = 614400.0, 1095680.0
+    cap.write_geotiff(tmp_path / "p.tif", np.ones((128, 128), np.uint8), x_min=x_min, y_max=y_max)
+    placement = cap.geotiff_placement(tmp_path / "p.tif")
+    assert placement["transform"] == (20.0, 0.0, x_min, 0.0, -20.0, y_max)
+    assert placement["bounds"] == (x_min, y_max - 2560.0, x_min + 2560.0, y_max)
+    assert placement["geokeys"] == {1024: 1, 1025: 1, 3072: 32651}
+    assert cap.placement_matches(placement, x_min, y_max)
+    assert not cap.placement_matches(placement, x_min + 20.0, y_max)  # one pixel off is caught
+    cap.write_geotiff(tmp_path / "small.tif", np.ones((64, 64), np.uint8), x_min=x_min, y_max=y_max)
+    assert not cap.placement_matches(cap.geotiff_placement(tmp_path / "small.tif"), x_min, y_max)
+    cap.write_geotiff(tmp_path / "plain.tif", np.ones((128, 128), np.uint8), x_min=None, y_max=None)
+    assert not cap.placement_matches(cap.geotiff_placement(tmp_path / "plain.tif"), x_min, y_max)
+    # Independent of tifffile's reader: the raw tags say the same thing a GIS would read.
+    tags = _geotiff_tags_by_struct(tmp_path / "p.tif")
+    assert (tags[256][0], tags[257][0]) == (128, 128)
+    assert tags[33550] == (20.0, 20.0, 0.0) and tags[33922] == (0.0, 0.0, 0.0, x_min, y_max, 0.0)
+    keys = tags[34735]
+    assert keys[:4] == (1, 1, 0, 3)
+    assert {keys[i]: keys[i + 3] for i in range(4, len(keys), 4)} == {1024: 1, 1025: 1, 3072: 32651}
+
+
+def test_issue_22_m1_reload_fails_when_a_prediction_geotiff_is_misplaced(tmp_path, monkeypatch):
+    ctx, ids = _evaluation_standins(tmp_path, monkeypatch)
+    for stage in ("evaluate", "export", "reload"):
+        assert cap.main(["--root", str(ctx.root), "--stage", stage]) == 0, stage
+    assert json.loads((ctx.out / "verification.json").read_text(encoding="utf-8"))["geotiff_placement_verified"] is True
+    path = ctx.out / "predictions" / f"{ids[1]}_C_score.tif"
+    array, geo = cap.read_geotiff(path)
+    cap.write_geotiff(path, array, x_min=geo["x_min"] + 2560.0, y_max=geo["y_max"], nodata=None, dtype=np.float32)
+    with pytest.raises(RuntimeError, match="reload parity failed"):
+        cap.main(["--root", str(ctx.root), "--stage", "reload"])
+    assert json.loads((ctx.out / "verification.json").read_text(encoding="utf-8"))["geotiff_placement_verified"] is False
+
+
+def test_issue_22_m2_fine_tune_text_names_what_the_curve_records():
+    sec7 = _markdown_with("## 7. Optional extension")
+    assert "development loss and F1 per epoch" not in sec7 and "fit loss and the development rice F1" in sec7
+    source = (TOOLS / "capstone.py").read_text(encoding="utf-8")
+    finetune = source[source.index("def stage_finetune"):source.index("def drop_stale_finetune")]
+    assert 'curve.append({"epoch": epoch, "fit_loss": float(np.mean(losses)), "dev_f1": f1})' in finetune
+    assert "dev_loss" not in finetune  # the text and the record agree: no development loss for C-FT
+
+
+def test_issue_22_learner_reread_the_byod_cell_shows_the_test_comparison_before_the_long_record(tmp_path, monkeypatch):
+    ctx, sources = _byod_standins(tmp_path, monkeypatch)
+    assert cap.main(["--root", str(ctx.root), "--stage", "byod", "--input", str(sources)]) == 0
+    cell = next(text for kind, text in _cells() if kind == "code" and "USE_BYOD = " in text)
+    shown = []
+    namespace = {"ROOT": ctx.root, "Path": Path, "json": json, "run_stage": lambda *a, **k: True,
+                 "show_table": lambda *a, **k: shown.append(("table", a)), "FileLink": lambda p: p,
+                 "display": lambda *a, **k: shown.append(("display", a)),
+                 "display_rows": lambda rows, columns: shown.append(("rows", [r["system"] for r in rows]))}
+    exec(compile(cell.replace("USE_BYOD = False", "USE_BYOD = True", 1)
+                 .replace("BYOD_PATH = ''", f"BYOD_PATH = {str(sources)!r}", 1), "byod-cell", "exec"), namespace)
+    assert ("rows", ["all non-rice", "exported canonical head", "adapted head"]) in shown
+
+
+def test_issue_22_m3_release_wording_matches_the_recorded_evidence():
+    title = _markdown_with("**Driving question:**")
+    assert "stays Candidate until a browser Run all" not in title
+    assert "**Release status and evidence.**" in title and "separate from how much execution evidence exists" in title
+    assert "fine-tune checkbox ticked" in title and "`1ed294f0`" in title and "upload dialog" in title
+    assert "not evidence for it until it is run again" in title
+    assert _notebook()["metadata"]["dimer"]["release_status"] == "Candidate"  # never promoted by this issue

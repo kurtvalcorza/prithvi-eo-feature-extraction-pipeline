@@ -42,6 +42,9 @@ DATASET_SLUG = "kurtvalcorza/rice-philippines-s2-alphaearth-v1-teaching"
 DATASET_VERSION = 1  # v2 and v3 (2026-10-11) change only the card and rights wording; Kaggle built no download
 # archive for them, so the notebook pins v1, whose data, INDEX.jsonl and member hashes are identical
 INDEX_SHA256 = "e92bbb9f20d1f7efb225d568e2a44a6ae3d59faab9079590e2dfad780458344d"
+# Label recipe of the dataset build (issue #22 M2): every INDEX row records it; it pins the annual-layer, code-map,
+# nearest-neighbour and edge-band rules described in Section 2.
+LABEL_RECIPE_SHA256 = "7adf68fe9d23622a1cf008f71cacd7c5006ed1377e34a5fc8c17c046953dc63e"
 DATASET_LICENSE = "CC BY 4.0"
 DEVELOPMENT_EXAMPLE_GROUP = "ph_96_766"  # a parent training sample: never used for selection or scoring
 
@@ -110,7 +113,10 @@ M1_NAMES += [f"q{q + 1}_{b}_mean" for q in range(QUARTERS) for b in BAND_NAMES]
 M1_NAMES += [f"q{q + 1}_observed_fraction" for q in range(QUARTERS)]
 
 ATTRIBUTION = (
-    "Rice labels: Chen et al., rice maps of the Philippines (Zenodo, https://doi.org/10.5281/zenodo.15124936), CC BY 4.0.\n"
+    "Rice labels: Chen et al., 20 m paddy rice cropping-intensity maps of Monsoon Asia (Zenodo, "
+    "https://doi.org/10.5281/zenodo.15124936), CC BY 4.0 - annual layer of each chip's year, codes 1-3 -> rice, "
+    "0 -> non-rice, nearest-neighbour to the 20 m chip grid, class-edge pixels ignored (label recipe "
+    "7adf68fe9d23622a1cf008f71cacd7c5006ed1377e34a5fc8c17c046953dc63e).\n"
     "Contains modified Copernicus Sentinel data 2019-2021.\n"
     "AlphaEarth Foundations Satellite Embedding (Google / Google DeepMind; Brown et al., 2025), CC BY 4.0 - carried "
     "in the dataset files; not read or shown by this notebook.\n"
@@ -359,6 +365,59 @@ def split_fit_dev(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 "development_rice_chips": rice_dev,
             }
     raise ValueError("no region assignment satisfies the declared development constraints")
+
+
+CHIP_METRES = CHIP * PIXEL_METRES  # 2560 m
+
+
+def footprint_gap(a: Mapping[str, Any], b: Mapping[str, Any]) -> tuple[float, bool]:
+    """Ground distance in metres between two chip squares given by upper-left x_min / y_max (0 when they touch or
+    overlap) and whether they share positive area."""
+    dx = abs(float(a["x_min"]) - float(b["x_min"])) - CHIP_METRES
+    dy = abs(float(a["y_max"]) - float(b["y_max"])) - CHIP_METRES
+    return math.hypot(max(dx, 0.0), max(dy, 0.0)), dx < 0 and dy < 0
+
+
+def spatial_audit(chips: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Audit of role separation (issue #22 S2). `chips` rows: id, site, year, role and, when georeferenced, x_min and
+    y_max (EPSG:32651 metres). Reports unique sites, sites seen in several years, sites or footprints shared across
+    roles, and the minimum ground distance between chips of different roles. Grouping by region or site reduces
+    leakage risk; it does not by itself guarantee distance, which is what this measures."""
+    by_site: dict[str, set] = {}
+    for c in chips:
+        by_site.setdefault(str(c["site"]), set()).add(c["role"])
+    years: dict[str, set] = {}
+    for c in chips:
+        years.setdefault(str(c["site"]), set()).add(c["year"])
+    placed = [c for c in chips if c.get("x_min") is not None and c.get("y_max") is not None]
+    roles = sorted({c["role"] for c in chips})
+    nearest: dict[str, Any] = {}
+    overlapping, touching = [], []
+    for i, a in enumerate(placed):
+        for b in placed[i + 1:]:
+            if a["role"] == b["role"]:
+                continue
+            gap, overlap = footprint_gap(a, b)
+            pair = "-".join(sorted((a["role"], b["role"])))
+            if pair not in nearest or gap < nearest[pair][0]:
+                nearest[pair] = (round(gap, 1), " / ".join(sorted((a["id"], b["id"]))))
+            if overlap:
+                overlapping.append(sorted((a["id"], b["id"])))
+            elif gap == 0:
+                touching.append(sorted((a["id"], b["id"])))
+    return {
+        "chips": len(chips), "unique_sites": len(by_site), "roles": roles,
+        "sites_with_repeated_years": sum(len(v) > 1 for v in years.values()),
+        "max_years_per_site": max((len(v) for v in years.values()), default=0),
+        "sites_in_more_than_one_role": sorted(s for s, r in by_site.items() if len(r) > 1),
+        "georeferenced_chips": len(placed),
+        "cross_role_overlapping_footprints": sorted(overlapping),
+        "cross_role_touching_footprints": sorted(touching),
+        "min_cross_role_distance_m": {k: v[0] for k, v in sorted(nearest.items())},
+        "nearest_cross_role_chips": {k: v[1] for k, v in sorted(nearest.items())},
+        "meaning": "ground distance between chip squares of different roles (0 = touching or overlapping); grouping "
+                   "by region or site reduces leakage risk but does not by itself guarantee distance",
+    }
 
 
 def check_roles(roles: Mapping[str, Sequence[str]]) -> None:
@@ -614,6 +673,39 @@ def read_geotiff(path: Path) -> tuple[np.ndarray, dict[str, Any]]:
     return array, geo
 
 
+def geotiff_placement(path: Path) -> dict[str, Any]:
+    """Full placement record of one GeoTIFF from its tags (issue #22 m1): raster shape, pixel scale, tiepoint, the
+    GeoKey directory as {key: value}, the affine transform (a, b, c, d, e, f) and bounds (left, bottom, right, top)."""
+    import tifffile
+
+    with tifffile.TiffFile(path) as tif:
+        page = tif.pages[0]
+        shape = tuple(int(v) for v in page.shape[:2])
+        tags = {tag.code: tag.value for tag in page.tags.values()}
+    if 33550 not in tags or 33922 not in tags or 34735 not in tags:
+        return {"shape": shape, "georeferenced": False}
+    scale, tie, keys = tuple(map(float, tags[33550])), tuple(map(float, tags[33922])), tuple(map(int, tags[34735]))
+    geokeys = {keys[i]: keys[i + 3] for i in range(4, 4 + 4 * keys[3], 4) if keys[i + 1] == 0}  # inline SHORT values
+    a, e = scale[0], -scale[1]
+    c, f = tie[3] - tie[0] * a, tie[4] - tie[1] * e
+    rows, cols = shape
+    return {"shape": shape, "georeferenced": True, "pixel_scale": scale[:2], "tiepoint": tie, "geokeys": geokeys,
+            "transform": (a, 0.0, c, 0.0, e, f), "bounds": (c, f + rows * e, c + cols * a, f)}
+
+
+def placement_matches(placement: Mapping[str, Any], x_min: float, y_max: float) -> bool:
+    """True when a GeoTIFF sits exactly on its chip: 128 x 128, projected EPSG:32651, pixel-is-area, 20 m north-up
+    transform with upper-left corner (x_min, y_max) and bounds one chip (2560 m) wide."""
+    return bool(
+        placement.get("georeferenced") and placement["shape"] == (CHIP, CHIP)
+        and placement["geokeys"].get(1024) == 1 and placement["geokeys"].get(1025) == 1
+        and placement["geokeys"].get(3072) == EPSG
+        and placement["transform"] == (PIXEL_METRES, 0.0, float(x_min), 0.0, -PIXEL_METRES, float(y_max))
+        and placement["bounds"] == (float(x_min), float(y_max) - CHIP * PIXEL_METRES,
+                                    float(x_min) + CHIP * PIXEL_METRES, float(y_max))
+    )
+
+
 def _csv_value(value: Any) -> Any:
     if value is None:
         return ""
@@ -720,6 +812,9 @@ def read_index(root: Path) -> list[dict[str, Any]]:
     rows = [json.loads(line) for line in data.decode("utf-8").splitlines() if line.strip()]
     if any(r["group_id"] == DEVELOPMENT_EXAMPLE_GROUP for r in rows):
         raise ValueError("the development example must not appear in the scoring index")
+    recipes = sorted({str(r.get("recipe_sha256")) for r in rows})
+    if recipes != [LABEL_RECIPE_SHA256]:
+        raise ValueError(f"INDEX label recipes {recipes} != pinned {LABEL_RECIPE_SHA256}; the labels changed")
     return rows
 
 
@@ -815,6 +910,8 @@ def stage_prepare(ctx: Context) -> None:
     roles = {"fit": split["fit"], "development": split["development"], "validation": validation}
     check_roles(roles)
     role_of = {cid: role for role, ids in roles.items() for cid in ids}
+    audit = spatial_audit([{"id": chip_id(r), "site": r["group_id"], "year": r["year"], "role": role_of[chip_id(r)],
+                            "x_min": r["x_min"], "y_max": r["y_max"]} for r in rows])
     chips: dict[str, Any] = {}
     table = []
     valid_counts = np.zeros(N_BINS)
@@ -858,6 +955,7 @@ def stage_prepare(ctx: Context) -> None:
         "development_example": f"{DEVELOPMENT_EXAMPLE_GROUP} (a parent training sample) is never read",
         "package_sha256_downloaded": package,
     })
+    write_json(ctx.out / "spatial_audit.json", audit)  # issue #22 S2: measured separation, not assumed
     _prepare_figures(ctx, chips, table, valid_counts)
     write_json(ctx.out / "prepare.json", {
         "layout": layout, "chips": len(chips), "roles": {k: len(v) for k, v in roles.items()},
@@ -1198,6 +1296,11 @@ def stage_train_head(ctx: Context) -> None:
     ctx.receipt("train-head", selected_epoch=epoch)
 
 
+ACTIVITY_SCOPE = ("fixed-recipe, development-only: every variant reuses the epoch count and threshold selected for "
+                  "T=4, so it is not an equally tuned comparison, and it does not isolate seasonal progression from "
+                  "observation coverage or from settings that suit T=4")
+
+
 def stage_activity(ctx: Context) -> None:
     torch = _torch_setup()
     roles = ctx.records()["roles"]
@@ -1214,6 +1317,8 @@ def stage_activity(ctx: Context) -> None:
         cache = dict(np.load(ctx.work / filename))
         # one head per frame count with C's recipe, seed and selected epoch count; only the input frames differ
         # (the T=4 row reproduces C exactly). Kurt, 2026-10-11: this measures one frame's information, not C's robustness.
+        # Issue #22 M1: the T=1 heads borrow T=4's epoch count and threshold, so this is a fixed-recipe comparison, not
+        # an equally tuned one, and it does not isolate seasonal progression from observation coverage.
         state, _curve = train_head(torch, _stack(cache, roles["fit"]), fit_y, _stack(cache, roles["development"]), dev_y,
                                    epochs, select_best=False, log=lambda _m: None)
         probs = head_probabilities(torch, _load_head(torch, state), _stack(cache, roles["development"]))
@@ -1224,6 +1329,7 @@ def stage_activity(ctx: Context) -> None:
     best_single = max(single, key=lambda r: (r["f1"] if r["f1"] is not None else -1.0))
     write_csv(ctx.out / "activity.csv", rows, ["variant", "epochs", "threshold", *METRIC_COLUMNS[2:]])
     selection["activity"] = {"question": "frames T=1 (each single quarter) vs T=4, development chips only",
+                             "comparison": ACTIVITY_SCOPE,
                              "best_single_quarter": best_single["variant"], "canonical_frames": 4,
                              "decision": "canonical validation keeps T=4 (declared before the activity)"}
     write_json(ctx.out / "selection.json", selection)
@@ -1352,6 +1458,30 @@ def drop_stale_finetune(ctx: Context) -> bool:
     return stale
 
 
+SUPPORT_COLUMNS = ["system", "observed_frames", "threshold", "f1", "precision", "recall", "iou", "scored_pixels",
+                   "reference_rice_pixels", "tp", "fp", "fn", "tn", "undefined"]
+
+
+def observed_frame_counts(valid: np.ndarray, bins: Sequence[int]) -> np.ndarray:
+    """(H, W) uint8: in how many of C's selected frames each pixel has a valid observation (0 to len(bins)). Where it
+    is below len(bins), C's input there is the filled pretraining mean, with no channel telling the head so."""
+    return np.asarray(valid, dtype=np.uint8)[list(bins)].sum(axis=0).astype(np.uint8)
+
+
+def support_rows(system: str, probabilities: Sequence[np.ndarray], labels: Sequence[np.ndarray],
+                 counts: Sequence[np.ndarray], threshold: float, frames: int = QUARTERS) -> list[dict[str, Any]]:
+    """Secondary diagnostic (issue #22 S3): pooled metrics of one system split by the number of observed selected
+    frames. The groups partition the same scored pixels as the primary table; nothing is removed from it."""
+    rows = []
+    for k in range(frames + 1):
+        masked = [np.where(np.asarray(c) == k, lab, IGNORE).astype(np.uint8) for c, lab in zip(counts, labels, strict=True)]
+        if not any((m != IGNORE).any() for m in masked):
+            continue
+        rows.append({"system": system, "observed_frames": k, "threshold": threshold,
+                     **pooled(probabilities, masked, threshold)})
+    return rows
+
+
 def stage_evaluate(ctx: Context) -> None:
     import lightgbm as lgb
 
@@ -1395,6 +1525,12 @@ def stage_evaluate(ctx: Context) -> None:
     write_csv(ctx.out / "per_chip_metrics.csv", chip_rows, CHIP_COLUMNS)
     np.savez(ctx.work / "validation_probs_c.npz", **dict(zip(ids, probs["C frozen Prithvi + head"], strict=True)))
     np.savez(ctx.work / "validation_probs_b.npz", **dict(zip(ids, probs["B LightGBM"], strict=True)))
+    counts = [observed_frame_counts(c["S2_valid"], records["chips"][cid]["frames"]["bins"]) for cid, c in
+              zip(ids, chips, strict=True)]
+    np.savez(ctx.work / "validation_observed_frames.npz", **dict(zip(ids, counts, strict=True)))
+    support = [row for system, values in probs.items() if not system.startswith("A")
+               for row in support_rows(system, values, labels, counts, thresholds[system])]
+    write_csv(ctx.out / "observation_support.csv", support, SUPPORT_COLUMNS)
     _evaluation_figures(ctx, ids, chips, probs, thresholds)
     ctx.receipt("evaluate", systems=list(probs))
 
@@ -1481,6 +1617,7 @@ def stage_export(ctx: Context) -> None:
     save_head(params, ctx.out / "head_adapter", _head_metadata(selection, "development chips (fit/dev protocol)"))
     records = ctx.records()
     probs = dict(np.load(ctx.work / "validation_probs_c.npz"))
+    support = dict(np.load(ctx.work / "validation_observed_frames.npz"))
     t = selection["C"]["threshold"]
     for cid, p in probs.items():
         label = ctx.chip(cid)["label"]
@@ -1492,7 +1629,9 @@ def stage_export(ctx: Context) -> None:
         # Usable maps: a decision for every pixel, and the rice scores themselves, so a user can choose a threshold.
         write_geotiff(ctx.out / "predictions" / f"{cid}_C_all_pixels.tif", decision, **where)
         write_geotiff(ctx.out / "predictions" / f"{cid}_C_score.tif", p, nodata=None, dtype=np.float32, **where)
-    ctx.receipt("export", geotiffs=3 * len(probs))
+        # Observation support (issue #22 S3): how many of C's four selected frames observed each pixel (0 = all filled).
+        write_geotiff(ctx.out / "predictions" / f"{cid}_observed_frames.tif", support[cid], nodata=None, **where)
+    ctx.receipt("export", geotiffs=4 * len(probs))
 
 
 def stage_reload(ctx: Context) -> None:
@@ -1508,7 +1647,7 @@ def stage_reload(ctx: Context) -> None:
     records = ctx.records()
     saved = dict(np.load(ctx.work / "validation_probs_c.npz"))
     t = float(manifest["threshold"])
-    worst, identical, geotiff_ok, extra_ok = 0.0, True, True, True
+    worst, identical, geotiff_ok, extra_ok, support_ok, placed_ok = 0.0, True, True, True, True, True
     labels, from_tiff = [], []
     for cid in records["roles"]["validation"]:
         chip = ctx.chip(cid)
@@ -1524,6 +1663,13 @@ def stage_reload(ctx: Context) -> None:
         extra_ok &= (bool(np.array_equal(everywhere, (saved[cid] >= t).astype(np.uint8)))
                      and bool(np.array_equal(score, saved[cid].astype(np.float32)))
                      and geo_all.get("epsg") == EPSG and geo_score.get("epsg") == EPSG)
+        observed, geo_obs = read_geotiff(ctx.out / "predictions" / f"{cid}_observed_frames.tif")
+        support_ok &= (bool(np.array_equal(observed, observed_frame_counts(chip["S2_valid"], select_frames(
+            chip["S2_valid"])["bins"]))) and geo_obs.get("epsg") == EPSG)
+        info = records["chips"][cid]
+        for suffix in ("_C", "_C_all_pixels", "_C_score", "_observed_frames"):  # m1: origin, size, transform, bounds
+            placed_ok &= placement_matches(geotiff_placement(ctx.out / "predictions" / f"{cid}{suffix}.tif"),
+                                           info["x_min"], info["y_max"])
         labels.append(chip["label"])
         from_tiff.append(np.where(array == IGNORE, 0, array).astype(np.float64))
     recomputed = pooled(from_tiff, labels, 0.5)
@@ -1535,10 +1681,12 @@ def stage_reload(ctx: Context) -> None:
         "binary_decisions_identical": identical, "geotiffs_match_and_georeferenced": geotiff_ok,
         "metrics_recomputed_from_geotiffs": metrics_ok,
         "score_and_all_pixel_geotiffs_match": extra_ok,
+        "observation_support_geotiffs_match": support_ok,
+        "geotiff_placement_verified": placed_ok,
         "meaning": "the saved computation is reproducible from files in a fresh process; not evidence of accuracy",
     }
     write_json(ctx.out / "verification.json", result)
-    if not (worst <= RELOAD_TOLERANCE and identical and geotiff_ok and metrics_ok and extra_ok):
+    if not (worst <= RELOAD_TOLERANCE and identical and geotiff_ok and metrics_ok and extra_ok and support_ok and placed_ok):
         raise RuntimeError(f"reload parity failed: {result}")
     ctx.receipt("reload")
 
@@ -1553,10 +1701,11 @@ def stage_report(ctx: Context) -> None:
     lines = answer_lines(metrics)
     lines += ["", "# Conclusion scaffold", "", "Complete in your own words:", "",
               "> On the labelled pixels of eight validation chips from two regions, [system] reached a pooled rice F1 of "
-              "[value] against [baselines]. On the development chips, [T=1 vs T=4 result]. The error maps show "
+              "[value] against [baselines]. On the development chips, under the recipe, epoch count and threshold selected "
+              "for four frames, [T=1 vs T=4 result, without claiming a cause]. The error maps show "
               "[pattern], and the 320 m patch grid [effect]. Labels are published map products, the sample is small "
               "and spatially clustered, and Prithvi's pretraining overlap with these places is unknown, so [bounded "
-              "claim]. Next we would [specific evidence].", ""]
+              "claim, naming how the pipelines differ beyond pretraining]. Next we would [specific evidence].", ""]
     (ctx.out / "conclusion.md").write_text("\n".join(lines), encoding="utf-8")
     write_json(ctx.out / "run_summary.json", {
         "notebook": source, "dataset": {"slug": DATASET_SLUG, "version": DATASET_VERSION, "index_sha256": INDEX_SHA256},
@@ -1589,14 +1738,25 @@ def answer_lines(metrics: Sequence[Mapping[str, Any]]) -> list[str]:
     lines += [f"- {r['system']}: F1 {_fmt(r['f1'])}, IoU {_fmt(r['iou'])}, precision {_fmt(r['precision'])}, "
               f"recall {_fmt(r['recall'])}" for r in metrics]
     better = c["f1"] is not None and (b["f1"] is None or c["f1"] > b["f1"])
-    verdict = (f"the head on frozen Prithvi-EO-2.0 features (C, F1 {_fmt(c['f1'])}) "
-               f"{'mapped rice better than' if better else 'did not map rice better than'} "
-               f"the spectral-temporal LightGBM baseline (B, F1 {_fmt(b['f1'])})")
+    verdict = (f"the frozen-Prithvi pipeline (C, F1 {_fmt(c['f1'])}) "
+               f"{'reached a higher pooled rice F1 than' if better else 'did not reach a higher pooled rice F1 than'} "
+               f"the spectral-temporal LightGBM pipeline (B, F1 {_fmt(b['f1'])})")
     lines += ["", "**Answer to the driving question, from this run:** on the labelled pixels of these 8 validation "
                   f"chips, {verdict}; calling everything non-rice (A) scored F1 {_fmt(rows['A']['f1'])}."]
     if "C-FT" in rows:
         lines += ["", f"The opt-in fine-tuned encoder (C-FT) scored F1 {_fmt(rows['C-FT']['f1'])}; it was selected on "
                       "development chips before validation was scored."]
+    lines += ["", "**What this compares (issue #22 S1):** two whole pipelines. B and C differ in temporal information "
+                  "(all 24 bins versus four quarterly frames), missing-data treatment (observed-fraction features and a "
+                  "fit-only fill versus mean-filled standardised inputs without a validity channel), class sampling (a "
+                  "class-stratified pixel sample versus every labelled pixel of the fit chips) and spatial prediction "
+                  "architecture (per-pixel trees versus an 8 x 8 logit grid bilinearly upsampled to 128 x 128), so this "
+                  "comparison does not isolate the contribution of foundation-model pretraining. The scores measure "
+                  "agreement with a published reference map, not independently established field accuracy."]
+    lines += ["", "**Three separate claims (S4):** an F1 above the all-non-rice floor shows that a system finds some "
+                  "reference-rice signal; a higher pooled F1 than the other pipeline is a comparison under the declared "
+                  "metric; neither shows that a map meets operational requirements, which this capstone does not "
+                  "assess."]
     lines += ["", "**Evidence level:** tutorial evidence from one run at teaching scale: 8 validation chips from two "
                   "neighbouring regions, scored once after every choice was frozen on development chips; map-derived "
                   "labels; no confidence intervals. It does not establish which approach is better nationally or "
@@ -1631,6 +1791,58 @@ def bundle_results(ctx: Context) -> dict[str, Any]:
 # ---- BYOD -------------------------------------------------------------------------------------------
 
 
+class ReloadParityError(RuntimeError):
+    """The adapted BYOD head did not reproduce its own scores after being saved and reloaded. A software or environment
+    fault, not a problem with the learner's files, so it is deliberately not a ChipError: it is never printed as an
+    input refusal (`Refused:`, exit 3) and it stops the stage before any success receipt or result bundle exists."""
+
+
+HEAD_SERIALIZATION_SCOPE = (
+    "head-serialization parity: the adapted head's weights are saved to files, read back and verified in the same "
+    "process, then re-applied to the cached encoder features of the test chips and compared with the scores before "
+    "saving. It does not rebuild the base model, recompute features or start a fresh process, so it is not the "
+    "canonical fresh-process, input-to-prediction reload of Section 10"
+)
+
+
+def head_serialization_parity(before: np.ndarray, after: np.ndarray, threshold: float,
+                              tolerance: float = RELOAD_TOLERANCE) -> dict[str, Any]:
+    """Compare the adapted head's test scores before saving with the scores of the head read back from its files.
+    Passing needs a finite maximum absolute difference within `tolerance` and identical binary decisions at
+    `threshold`. Returns the record; `require_head_serialization_parity` raises when it fails."""
+    before = np.asarray(before, dtype=np.float64)
+    after = np.asarray(after, dtype=np.float64)
+    if before.shape != after.shape or before.size == 0:
+        raise ReloadParityError(f"head-serialization parity: score shapes differ ({before.shape} vs {after.shape})")
+    with np.errstate(invalid="ignore"):
+        difference = float(np.abs(after - before).max())
+    finite = bool(np.isfinite(before).all() and np.isfinite(after).all() and math.isfinite(difference))
+    identical = bool(np.array_equal(before >= threshold, after >= threshold))
+    return {
+        "check": HEAD_SERIALIZATION_SCOPE, "max_abs_difference": difference if finite else None,
+        "finite": finite, "tolerance": tolerance, "threshold": threshold, "binary_decisions_identical": identical,
+        "passed": finite and difference <= tolerance and identical,
+    }
+
+
+def require_head_serialization_parity(record: Mapping[str, Any]) -> None:
+    if record["passed"]:
+        return
+    reasons = []
+    if not record["finite"]:
+        reasons.append("a score is not finite")
+    elif record["max_abs_difference"] > record["tolerance"]:
+        reasons.append(f"max |score difference| {record['max_abs_difference']:.3g} exceeds {record['tolerance']}")
+    if not record["binary_decisions_identical"]:
+        reasons.append(f"rice/non-rice decisions at threshold {record['threshold']} differ")
+    raise ReloadParityError(
+        "BYOD adaptation failed verification (head-serialization parity): " + "; ".join(reasons) + ". The adapted "
+        "head was discarded and no BYOD result bundle was written. This is a software or environment fault, not a "
+        "problem with your files: keep the stage log (byod.log in the run directory) and report it; running the "
+        "cell again starts from a clean BYOD folder."
+    )
+
+
 def has_labelled_pixels(label: np.ndarray | None) -> bool:
     """True when a label exists and at least one pixel is 0 or 1; an all-255 mask can only be predicted, not adapted on
     (a training batch of ignored targets alone would make the mean cross-entropy NaN)."""
@@ -1643,6 +1855,40 @@ def byod_group(stem: str, attrs: Mapping[str, Any]) -> str:
     import re
 
     return str(attrs["group"]) if "group" in attrs else re.sub(r"_(19|20)\d\d$", "", stem)
+
+
+def chip_content_digest(chip: Mapping[str, Any]) -> str:
+    """SHA-256 of a chip's S2 (NaN-normalised), S2_valid and label arrays: equal for renamed copies of one chip."""
+    digest = hashlib.sha256()
+    digest.update(np.ascontiguousarray(np.nan_to_num(np.asarray(chip["S2"], dtype=np.float32), nan=-9999.0)).tobytes())
+    digest.update(np.ascontiguousarray(np.asarray(chip["S2_valid"], dtype=np.uint8)).tobytes())
+    if chip.get("label") is not None:
+        digest.update(np.ascontiguousarray(np.asarray(chip["label"], dtype=np.uint8)).tobytes())
+    return digest.hexdigest()
+
+
+def byod_grouping_check(ids: Sequence[str], chips: Mapping[str, Mapping[str, Any]],
+                        groups: Mapping[str, str]) -> dict[str, Any]:
+    """Issue #22 S2: how trustworthy the BYOD site grouping is. Records which site ids came from an HDF5 attribute and
+    which fell back to the file name (unverified), finds chips with identical content (renamed duplicates) and
+    georeferenced chips whose footprints overlap on the ground although they carry different site ids. Either of the
+    last two would let one place sit in fit and test at once, so adaptation is not run when they occur."""
+    by_digest: dict[str, list[str]] = {}
+    for cid in ids:
+        by_digest.setdefault(chip_content_digest(chips[cid]), []).append(cid)
+    placed = [cid for cid in ids if "x_min" in chips[cid]["attrs"] and "y_max" in chips[cid]["attrs"]]
+    conflicts = []
+    for i, a in enumerate(placed):
+        for b in placed[i + 1:]:
+            if groups[a] != groups[b] and footprint_gap(chips[a]["attrs"], chips[b]["attrs"])[1]:
+                conflicts.append(sorted((a, b)))
+    return {
+        "site_ids_from_attribute": sorted(c for c in ids if "group" in chips[c]["attrs"]),
+        "site_ids_from_file_name_unverified": sorted(c for c in ids if "group" not in chips[c]["attrs"]),
+        "duplicate_content": sorted(sorted(v) for v in by_digest.values() if len(v) > 1),
+        "overlapping_footprints_with_different_sites": sorted(conflicts),
+        "georeferenced": len(placed),
+    }
 
 
 def byod_split(ids: Sequence[str], groups: Mapping[str, str], rice: Mapping[str, bool],
@@ -1787,10 +2033,25 @@ def stage_byod(ctx: Context, sources: Sequence[Path]) -> None:
         groups = {cid: byod_group(cid, chips[cid]["attrs"]) for cid in labelled}
         rice = {cid: bool((chips[cid]["label"] == 1).any()) for cid in labelled}
         nonrice = {cid: bool((chips[cid]["label"] == 0).any()) for cid in labelled}
+        grouping = byod_grouping_check(labelled, chips, groups)
+        summary["grouping"] = grouping
+        if grouping["site_ids_from_file_name_unverified"]:
+            print(f"{len(grouping['site_ids_from_file_name_unverified'])} labelled chip(s) have no group_id/group "
+                  "attribute: their site is taken from the file name, which is not verified. Add group_id so that "
+                  "every year of one place gets the same site.", flush=True)
+        blocked = []
+        if grouping["duplicate_content"]:
+            blocked.append(f"chips with identical content (renamed copies?): {grouping['duplicate_content']}")
+        if grouping["overlapping_footprints_with_different_sites"]:
+            blocked.append("chips that overlap on the ground carry different site ids: "
+                           f"{grouping['overlapping_footprints_with_different_sites']}; give them the same group_id")
         try:
+            if blocked:
+                raise ChipError("; ".join(blocked))
             split = byod_split(labelled, groups, rice, nonrice)
         except ChipError as exc:
             summary["adaptation"] = f"not run: {exc}"
+            print(f"Adaptation not run: {exc}", flush=True)
         else:
             ys = {cid: chips[cid]["label"] for cid in labelled}
             fx = np.stack([features[c] for c in split["fit"]])
@@ -1807,14 +2068,22 @@ def stage_byod(ctx: Context, sources: Sequence[Path]) -> None:
             save_head({k: state[k] for k in HEAD_TENSORS}, out / "byod_head_adapter", meta)
             reloaded, _m = load_head(out / "byod_head_adapter")
             again = head_probabilities(torch, _load_head(torch, reloaded), np.stack([features[c] for c in split["test"]]))
+            parity = head_serialization_parity(test_probs, again, sel["threshold"])
+            if not parity["passed"]:  # issue #22 M3: enforced before any summary, bundle or receipt is written
+                shutil.rmtree(out / "byod_head_adapter")
+                write_json(out / "byod_verification_failure.json", parity)
+                require_head_serialization_parity(parity)
             summary["adaptation"] = {
                 "split": split, "selected_epoch": select_epoch(curve), "threshold": sel["threshold"],
+                "spatial_audit": spatial_audit([
+                    {"id": c, "site": groups[c], "year": c.rsplit("_", 1)[-1], "role": role, **{k: chips[c]["attrs"][k] for k in
+                                                                         ("x_min", "y_max") if k in chips[c]["attrs"]}}
+                    for role, ids in split.items() for c in ids]),
                 "test_all_non_rice": pooled([np.zeros_like(p) for p in test_probs], test_labels, 0.5),
                 "test_canonical_head": pooled([canonical[c] for c in split["test"]], test_labels,
                                               manifest["threshold"]),
                 "test_adapted_head": pooled(list(test_probs), test_labels, sel["threshold"]),
-                "reload_max_abs_difference": float(np.abs(again - test_probs).max()),
-                "reload_binary_identical": bool(np.array_equal(again >= sel["threshold"], test_probs >= sel["threshold"])),
+                "head_serialization_parity": parity,
             }
     else:
         summary["adaptation"] = f"not run: needs at least {BYOD_MIN_ADAPT_CHIPS} labelled chips"
