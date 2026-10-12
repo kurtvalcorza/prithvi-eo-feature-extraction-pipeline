@@ -53,11 +53,11 @@ Colab T4 smoke, 2026-10-11 (pre-build feasibility, not release evidence; Colab C
 - Failure log (kept): run 1 upgraded numpy inside the live kernel and the model import crashed (NOTEBOOK_SPEC §25.13 anti-pattern); run 2 pinning numpy made pip refuse terratorch 1.2.13. Run 3 ran the model stages in a fresh interpreter. `colab exec` exited 0 on the failing runs, so results must be judged from outputs.
 
 Remaining gate items before build:
-1. Resolution mismatch: Prithvi-EO-2.0 was pretrained on 30 m HLS; this data is 20 m Sentinel-2 surface reflectance. State it; do not resample to 30 m to hide it.
+1. Resolution mismatch: Prithvi-EO-2.0 was pretrained on 30 m HLS; this data is 20 m Sentinel-2 surface reflectance. State it as a domain shift; the capstone keeps the native grid (resampling or harmonisation would be a different design choice, not tested here — issue #22 S1).
 2. Processing level: Prithvi expects HLS-style surface reflectance; this dataset is S2 surface reflectance. Close match; disclose.
 3. Frame selection: four frames, the clearest valid bin in each calendar quarter, earliest on ties (study protocol line 58). Record selected bins and valid fractions per chip.
 4. Missing data: NaN after standardisation -> 0 (the pretraining mean). Record the filled fraction per chip and frame. Pixels with no valid observation in any selected frame stay scored, as in the study.
-5. Output resolution: 16 px patches = 320 m at 20 m. A head on patch tokens upsamples a coarse grid; field edges will blur. This is a teaching point, not something to hide.
+5. Output resolution: 16 px patches = 320 m at 20 m. A head on patch tokens upsamples a coarse grid; field edges will blur. Distinguish output pixel spacing (20 m), token spacing (320 m) and resolved detail; attribute the limit to this head (no skip connection or learned sub-patch decoder), not to every Prithvi-based segmentation design (issue #22 S1).
 
 ## 5. Systems compared
 
@@ -103,6 +103,7 @@ Change one thing on development chips only: **number of frames, T = 1 (best sing
 - Aggregate TP/FP/FN/TN over pixels with `label != 255`; report pooled rice F1 (primary), IoU, precision, recall. Undefined ratios are null with a reason.
 - Per-chip table for diagnosis only. Chips and pixels are spatially clustered (many chips touch); no pixel-level or chip-level significance tests or narrow confidence intervals.
 - 8 validation chips from two regions: no national or operational claim.
+- B and C differ in temporal information, missing-data handling, class sampling and prediction architecture: a whole-pipeline comparison, not an isolation of pretraining (issue #22 S1). Keep three claims apart: some reference-rice signal (F1 above A), comparator performance (C vs B under the declared metric), and practical usefulness (not addressed) (S4).
 - Labels are published map products, not field observations. Disagreement is not proof of model error.
 - Prithvi pretraining data overlap with these locations is unknown; say so.
 

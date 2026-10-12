@@ -665,14 +665,16 @@ def test_review_knd4_the_run_states_its_own_answer_with_its_evidence_level():
 
     lines = "\n".join(cap.answer_lines([row("A all-non-rice", 0.0), row("B LightGBM", 0.758),
                                          row("C frozen Prithvi + head", 0.601)]))
-    assert "did not map rice better than the spectral-temporal LightGBM baseline (B, F1 0.758)" in lines
+    assert "did not reach a higher pooled rice F1 than the spectral-temporal LightGBM pipeline (B, F1 0.758)" in lines
     assert "(C, F1 0.601)" in lines and "(A) scored F1 0.000" in lines and "C-FT" not in lines
     assert "**Evidence level:**" in lines and "nationally" in lines and "precision undefined" in lines
     lines = "\n".join(cap.answer_lines([row("A all-non-rice", 0.0), row("B LightGBM", 0.5),
                                          row("C frozen Prithvi + head", 0.7), row("C-FT fine-tuned (opt-in)", 0.6)]))
-    assert "(C, F1 0.700) mapped rice better than" in lines and "(C-FT) scored F1 0.600" in lines
-    assert "did not" not in cap.answer_lines([row("A all-non-rice", 0.0), row("B LightGBM", None),
-                                             row("C frozen Prithvi + head", 0.1)])[-3]
+    assert "(C, F1 0.700) reached a higher pooled rice F1 than" in lines and "(C-FT) scored F1 0.600" in lines
+    verdict = next(line for line in cap.answer_lines([row("A all-non-rice", 0.0), row("B LightGBM", None),
+                                                       row("C frozen Prithvi + head", 0.1)])
+                   if line.startswith("**Answer"))
+    assert "did not" not in verdict
 
 
 def test_csv_and_zip_round_trips_with_tamper_detection(tmp_path):
@@ -1112,3 +1114,29 @@ def test_issue_22_m2_label_lineage_is_explicit_and_the_recipe_is_checked(tmp_pat
     index([row, {**row, "group_id": "ph_3_4", "recipe_sha256": "0" * 64}])
     with pytest.raises(ValueError, match="label recipes"):
         cap.read_index(tmp_path)
+
+
+def test_issue_22_s1_s4_s5_whole_pipeline_claims_spatial_detail_and_responsive_answers():
+    def row(system, f1):
+        return {"system": system, "f1": f1, "iou": None, "precision": None, "recall": None}
+
+    answer = "\n".join(cap.answer_lines([row("A all-non-rice", 0.0), row("B LightGBM", 0.758),
+                                         row("C frozen Prithvi + head", 0.601)]))
+    assert "two whole pipelines" in answer and "does not isolate the contribution of foundation-model pretraining" in answer
+    assert "8 x 8 logit grid bilinearly upsampled" in answer and "not independently established field accuracy" in answer
+    assert "operational requirements" in answer and "mapped rice better" not in answer  # S4: three separate claims
+    opening = _markdown_with("**Driving question:**")
+    assert "whole pipelines" in opening
+    problem = _markdown_with("### Problem statement")
+    assert "(1) **Signal:**" in problem and "(3) **Practical usefulness:**" in problem
+    assert "addresses the first two questions, not the third" in problem
+    sec4 = _markdown_with("## 4. Trace how Prithvi's input")
+    assert "to hide the mismatch" not in sec4 and "domain shifts" in sec4
+    sec5 = _markdown_with("## 5. Train head C")
+    assert "**pixel spacing**" in sec5 and "**resolved detail**" in sec5 and "no high-resolution skip connection" in sec5
+    assert "not of every Prithvi-based segmentation design" in sec5
+    prepare = _markdown_with("**Checkpoint:** name one month range")
+    assert "flatter non-rice pixel" not in prepare and "single examples" in prepare and "one peak, none" in prepare
+    ids = {c["id"]: _source(c) for c in _notebook()["cells"]}
+    assert "show_source('select_frames', 'prithvi_input')" in ids["rice-source-input"]
+    assert "show_source('_head_module')" in ids["rice-source-head"]

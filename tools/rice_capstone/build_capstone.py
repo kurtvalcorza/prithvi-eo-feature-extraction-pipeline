@@ -130,7 +130,7 @@ TITLE = r"""# Rice From Space: What Does a Satellite Foundation Model Add?
 > extent permitted by law, the maintainers and the DIMER platform accept no liability for
 > its use. Its rice maps are not official crop statistics, area estimates or agricultural advice.
 
-**Driving question:** Given 32 labelled Sentinel-2 chips, does a head trained on frozen Prithvi-EO-2.0 features map Philippine rice better than a hand-built spectral-temporal baseline, and what can 8 validation chips actually establish?
+**Driving question:** Given 32 labelled Sentinel-2 chips, does a head trained on frozen Prithvi-EO-2.0 features map Philippine rice better than a hand-built spectral-temporal baseline, and what can 8 validation chips actually establish? B and C are whole pipelines that differ in more than the pretrained features, so the comparison asks which pipeline agrees better with a published rice map, not what pretraining alone contributes.
 
 Rice paddies change through the year: fields are flooded, the crop greens up, and then it is harvested. Optical satellites see that cycle as a pattern over time, not in a single image [1]. In this notebook you will compare three ways of turning a year of Sentinel-2 observations [2] into a rice map, and practise stating only what a small, clustered evaluation can support. It is an optional capstone after the *Rice from space* course lessons [L3 (Sentinel-2 LightGBM)](https://www.kaggle.com/code/kurtvalcorza/rice-from-space-lesson-3-lightgbm-baseline) [11] and [L3B (AlphaEarth LightGBM)](https://www.kaggle.com/code/kurtvalcorza/rice-from-space-lesson-3b-alphaearth-baseline) [12] on Kaggle; it links to them rather than re-teaching feature engineering.
 
@@ -184,7 +184,7 @@ PROBLEM = r"""### Problem statement
 
 **The task.** Turn a year of Sentinel-2 observations of a 2.56 km chip into a 20 m map that marks each pixel as paddy rice or not, where the reference is a published annual paddy-rice map (Section 2 gives the exact label definition). Scores cover the retained labelled pixels (`label ≠ 255`), not every exported pixel; class-edge pixels are excluded, which removes part of the small-field and edge-delineation problem from the score.
 
-**What a useful outcome looks like.** On the 8 validation chips, which are scored once, a system is useful if its pooled rice F1 is clearly above the all-non-rice floor (A, F1 0). A pretrained foundation model adds something here only if its head (C) reaches a higher pooled rice F1 than the hand-built spectral-temporal baseline (B) on the same pixels. Section 10 states this run's answer from its own validation table.
+**What a useful outcome looks like.** Keep three questions apart. (1) **Signal:** on the 8 validation chips, which are scored once, a pooled rice F1 clearly above the all-non-rice floor (A, F1 0) shows that a system finds some reference-rice signal. (2) **Comparator:** the frozen-Prithvi pipeline (C) is ahead only if it reaches a higher pooled rice F1 than the hand-built spectral-temporal pipeline (B) on the same pixels; because the two pipelines also differ in time steps, gap handling, pixel sampling and output architecture, that does not by itself isolate what pretraining contributes. (3) **Practical usefulness:** meeting operational requirements such as agreed accuracy targets, area estimates and field validation. This capstone addresses the first two questions, not the third. Section 10 states this run's answer from its own validation table.
 
 **Scope boundary.** This notebook does not estimate rice area, cropping intensity or planting dates, does not forecast early in the season, and makes no national or operational accuracy claim.
 
@@ -209,6 +209,7 @@ GLOSSARY = r"""<details>
 | **Foundation model** | A large model pretrained on broad data and then adapted; Prithvi-EO-2.0 is one for Earth observation [3]. |
 | **Frozen features / head** | The pretrained encoder's internal outputs, used without changing its weights; the *head* is the small trainable layer on top. |
 | **Patch / token** | Prithvi cuts each frame into 16 × 16 pixel patches (320 m here) and describes each with a 1024-number *token*. |
+| **Pixel spacing / resolved detail** | Pixel spacing is the size of a map's grid cells (20 m for every output here). Resolved detail is the smallest pattern the map can actually separate; C predicts from 320 m tokens, so its detail is coarser than its 20 m spacing. |
 | **Fit / development / validation** | Fit chips train models; development chips make every choice; validation chips are scored once, at the end. |
 | **Threshold** | The cut-off that turns a rice score in [0, 1] into a rice/non-rice decision; choosing it is model selection. |
 | **TP / FP / FN / TN** | Rice found / non-rice called rice / rice missed / non-rice correctly left. |
@@ -380,6 +381,16 @@ def show_figures(pattern):
         display(Image(filename=str(path)))
 
 
+def show_source(*names):
+    # Prints top-level functions of the carried capstone.py, so the core steps can be read in place.
+    import ast
+    text = (ROOT / 'capstone.py').read_text(encoding='utf-8')
+    found = {node.name: ast.get_source_segment(text, node) for node in ast.parse(text).body
+             if isinstance(node, ast.FunctionDef)}
+    for name in names:
+        print(found[name], end='\n\n')
+
+
 def show_record(name):
     value = json.loads((ROOT / 'outputs' / name).read_text(encoding='utf-8'))
     if name == 'prepare.json':
@@ -427,14 +438,14 @@ CELL_PREPARE = r"""run_stage('prepare')
 show_record('prepare.json')
 show_figures('overview_*')"""
 
-AFTER_PREPARE = r"""**What to notice:** the table lists every chip with its role, the four bins chosen as Prithvi's frames, the lowest valid fraction among them, and the share of model input that had to be filled. The three refusal probes show that a malformed chip is stopped with a message naming the broken rule, before any model runs. In the NDVI figure, look for the dips and rises of the rice pixel against the flatter non-rice pixel; in the valid-fraction bar chart, find the bins where clouds removed most observations.
+AFTER_PREPARE = r"""**What to notice:** the table lists every chip with its role, the four bins chosen as Prithvi's frames, the lowest valid fraction among them, and the share of model input that had to be filled. The three refusal probes show that a malformed chip is stopped with a message naming the broken rule, before any model runs. The NDVI figure plots one rice pixel and one non-rice pixel from one chip: compare their curves, but treat them as single examples, not a representative phenology analysis — either may depart from the textbook pattern. In the valid-fraction bar chart, find the bins where clouds removed most observations.
 
 **Checkpoint:** name one month range with frequent gaps, one feature of the rice NDVI curve, and one reason the label might disagree with what you see in the composite.
 
 <details>
 <summary>Check your reasoning (open after answering)</summary>
 
-Gaps cluster in the wet season, when clouds are persistent; that is exactly when some rice is growing, so missing data and the signal you need overlap. Many Philippine rice areas are cropped twice a year, so the rice curve often shows two green-up peaks separated by low values at harvest and flooding; a forest or grass pixel stays high or changes slowly. The label can disagree because it comes from a published map with its own errors, because a 20 m pixel can mix a field edge with a road or levee (hence the ignored edge band), and because the composite you see is one bin, not the whole year.
+Gaps cluster in the wet season, when clouds are persistent; that is exactly when some rice is growing, so missing data and the signal you need overlap. Many Philippine rice areas are cropped twice a year, so a rice curve can show two green-up peaks separated by low values at harvest and flooding — but the pixel you see may show one peak, none, or a jagged line. Plausible reasons: missing bins break the series in the cloudy season; the field may be cropped once that year; the pixel may mix a field with a levee or road; or the map label may be wrong for that pixel. The non-rice pixel need not be flat either: other crops, grass and wetlands also change through the year. Describe what your plot shows and give a reason before generalising from one pixel. The label can disagree because it comes from a published map with its own errors, because a 20 m pixel can mix a field edge with a road or levee (hence the ignored edge band), and because the composite you see is one bin, not the whole year.
 
 </details>"""
 
@@ -479,14 +490,17 @@ How the input is built, and what each step costs:
 1. **Four frames.** The model was pretrained on four time steps. We take the clearest bin of each calendar quarter — highest valid fraction, earliest bin on ties — and record the chosen bins and their valid fractions (Section 2 table).
 2. **Normalisation.** Reflectance × 10,000, then subtract and divide by the model's pinned band means and standard deviations. This is the repository's audited preprocessing, not a new recipe.
 3. **Gaps.** After standardisation every missing value is set to 0, which is the pretraining mean. The filled share is recorded per chip and per frame. Pixels with no observation in any chosen frame stay in the scoring, as in the course study.
-4. **No resizing.** Prithvi was pretrained on 30 m Harmonized Landsat–Sentinel (HLS) data; these chips are 20 m Sentinel-2 surface reflectance. We do not resample to 30 m to hide the mismatch: the model sees finer pixels than it was trained on, and the processing level is close to, but not the same as, HLS. Both are stated limitations.
-5. **Patches.** Each 16 × 16 pixel patch — **320 m** at 20 m — becomes one token. A 128-pixel chip gives 8 × 8 patches per frame. Block 12 of 24 is fixed in advance (the repository's validated `FEATURE_LAYER`); there is no layer sweep. Tokens are averaged over the four frames.
+4. **No resizing.** Prithvi was pretrained on 30 m Harmonized Landsat–Sentinel (HLS) data; these chips are 20 m Sentinel-2 surface reflectance. We keep the native 20 m grid and do not resample or harmonise to HLS, so the model sees finer pixels than it was trained on, and the processing level is close to, but not the same as, HLS. Both are stated domain shifts. Resampling or harmonising would be a different design choice with its own trade-offs; it is not tested here.
+5. **Patches.** Each 16 × 16 pixel patch — **320 m** at 20 m — becomes one token, so the features are spaced 320 m apart even though the input pixels are 20 m. A 128-pixel chip gives 8 × 8 patches per frame. Block 12 of 24 is fixed in advance (the repository's validated `FEATURE_LAYER`); there is no layer sweep. Tokens are averaged over the four frames.
 
-Steps 1–3 are the functions `select_frames` and `prithvi_input` in `capstone.py`, which the second Infrastructure cell (*write and verify the embedded source*) writes to the run directory printed in Section 1; open it from the file browser under `outputs/philippines_rice/`. Reading them is optional; the steps above describe what they do.
+Steps 1–3 are the functions `select_frames` and `prithvi_input` in `capstone.py`, which the second Infrastructure cell (*write and verify the embedded source*) writes to the run directory printed in Section 1. The next cell prints those two functions. Reading them is optional; the steps above describe what they do.
 
 The upstream checkpoint is a pickle. Its imported globals are audited statically against a pinned digest, it is unpickled once with torch's `weights_only` loader and converted to safetensors, and the model is loaded strictly from the verified file. No downloaded model code is executed. Features are computed once in float32 with deterministic GPU settings and cached, so later stages train on the cache.
 
 **Predict before running:** how many patch tokens does the encoder return for one chip with four frames? (Hint: one extra summary token is added.)"""
+
+CELL_SOURCE_INPUT = r"""# Optional reading: steps 1-3 above (frame choice, normalisation and gap filling), from the carried capstone.py
+show_source('select_frames', 'prithvi_input')"""
 
 CELL_FEATURES = r"""run_stage('features')
 show_record('model.json')
@@ -503,9 +517,14 @@ Four frames × 8 × 8 patches = 256 patch tokens, plus one class token = 257; th
 
 SEC5 = r"""## 5. Train head C on the fit chips · [Concept]
 
-**System C:** the frozen block-12 features → a 1 × 1 convolution from 1024 to 256 channels → GELU → a 1 × 1 convolution to 2 classes → bilinear upsampling from 8 × 8 to 128 × 128 pixels. Loss: cross-entropy with label 255 ignored, no class weights. Fixed in advance: AdamW, learning rate 0.001, weight decay 0.01, batch 8, at most 30 epochs, seed 0, no augmentation. The epoch with the highest development rice F1 at 0.5 is kept (earliest on ties), then C's threshold is chosen on development with the same rule as B. Training runs on the cached features, so it takes seconds. The head is `_head_module` and the training loop `train_head` in the same `capstone.py`.
+**System C:** the frozen block-12 features → a 1 × 1 convolution from 1024 to 256 channels → GELU → a 1 × 1 convolution to 2 classes → bilinear upsampling from 8 × 8 to 128 × 128 pixels. Loss: cross-entropy with label 255 ignored, no class weights. Fixed in advance: AdamW, learning rate 0.001, weight decay 0.01, batch 8, at most 30 epochs, seed 0, no augmentation. The epoch with the highest development rice F1 at 0.5 is kept (earliest on ties), then C's threshold is chosen on development with the same rule as B. Training runs on the cached features, so it takes seconds. The head is `_head_module` and the training loop `train_head` in the same `capstone.py`; the next cell prints the head.
+
+**What this head can resolve.** It predicts one pair of logits per 320 m patch — an 8 × 8 grid — and interpolates them bilinearly to 128 × 128; it has no high-resolution skip connection and no learned decoder below the patch size. So C's map has 20 m **pixel spacing** but its **resolved detail** is set by the 320 m token grid: a 20 m output grid does not establish 20 m field delineation. This is a property of this simple head, not of every Prithvi-based segmentation design; decoders with learned upsampling or skip connections are a different design not tested here.
 
 **Predict before running:** will the development loss keep falling for 30 epochs? Will C's development F1 beat B's?"""
+
+CELL_SOURCE_HEAD = r"""# Optional reading: head C (two 1 x 1 convolutions on the 8 x 8 token grid, then bilinear upsampling)
+show_source('_head_module')"""
 
 CELL_TRAIN = r"""run_stage('train-head')
 show_figures('head_training_curves*')
@@ -610,12 +629,12 @@ display(Markdown((ROOT / 'outputs' / 'conclusion.md').read_text(encoding='utf-8'
 
 SEC11 = r"""## 11. Conclude with evidence · [Evaluation practice]
 
-The output above ends with **This run's answer**, written from the validation table the run just produced: it states whichever result occurred, with its evidence level. Read it, then complete the conclusion scaffold that follows it in your own words. A strong conclusion states the task and pixel population, reports every system on the same pixels — including a baseline that may have won — names the frame activity's result, uses the error maps to say *where* systems differ, and states the limits: eight validation chips from two regions, spatial clustering, map-derived labels, the 20 m versus 30 m mismatch, the 320 m patch grid and unknown pretraining overlap.
+The output above ends with **This run's answer**, written from the validation table the run just produced: it states whichever result occurred, with its evidence level. Read it, then complete the conclusion scaffold that follows it in your own words. A strong conclusion states the task and pixel population, reports every system on the same pixels — including a baseline that may have won — names the frame activity's result, uses the error maps to say *where* systems differ, and states the limits: eight validation chips from two regions, spatial clustering, map-derived labels, pipelines that differ in more than pretraining, the 20 m versus 30 m mismatch, the 320 m patch grid and unknown pretraining overlap. It also keeps three claims apart — finding some rice signal, beating the comparator under the declared metric, and being useful in practice — and makes only the first two.
 
 <details>
 <summary>Check your reasoning: what makes a conclusion strong? (open after writing yours)</summary>
 
-Strong: "On the labelled pixels of eight validation chips in Central and Eastern Visayas, the frozen-Prithvi head reached pooled rice F1 *x* against *y* for the LightGBM baseline and 0 for all-non-rice; on development, under the recipe, epoch count and threshold selected for four frames, four frames scored *z* above the best single quarter, which does not by itself show that seasonal progression caused the difference. The error maps show [where C and B differ: whole fields, edges or cloud-filled areas]. With eight clustered chips and map-derived labels, this does not establish which approach is better nationally; next we would score a larger, spatially separated test set." Weak: "Prithvi is better at mapping rice" from one pooled number.
+Strong (written for a run in which B scored higher; swap the systems if yours did not): "On the retained labelled pixels of eight validation chips in Central and Eastern Visayas, the spectral-temporal LightGBM pipeline achieved higher pooled rice F1 than the frozen-Prithvi pipeline, *y* versus *x*. [Name the precision/recall pattern, for example: the Prithvi pipeline had higher precision but substantially lower recall.] These scores measure agreement with a published reference map, not independently established field accuracy. Because the pipelines differ in temporal information, missing-data treatment, spatial prediction architecture and training procedure, this comparison does not isolate the contribution of foundation-model pretraining. The development experiment favoured four frames under the prescribed settings, but does not independently establish that phenological reasoning caused that advantage. The error maps show [where C and B differ: whole fields, edges or cloud-filled areas]. With eight clustered chips, this does not establish which approach is better nationally or whether either map is fit for operational use; next we would score a larger, spatially separated test set." Weak: "Prithvi is better at mapping rice" from one pooled number.
 
 </details>
 
@@ -739,8 +758,8 @@ def cells() -> list[tuple[str, str, dict]]:
         ("markdown", INSTALL_MD, {}), ("code", install, INFRA),
         ("markdown", SEC2, {}), ("code", CELL_PREPARE, {}), ("markdown", AFTER_PREPARE, {}),
         ("markdown", SEC3, {}), ("code", CELL_BASELINE, {}), ("markdown", AFTER_BASELINE, {}),
-        ("markdown", SEC4, {}), ("code", CELL_FEATURES, {}), ("markdown", AFTER_FEATURES, {}),
-        ("markdown", SEC5, {}), ("code", CELL_TRAIN, {}), ("markdown", AFTER_TRAIN, {}),
+        ("markdown", SEC4, {}), ("code", CELL_SOURCE_INPUT, {CELL_ID: "rice-source-input"}), ("code", CELL_FEATURES, {}), ("markdown", AFTER_FEATURES, {}),
+        ("markdown", SEC5, {}), ("code", CELL_SOURCE_HEAD, {CELL_ID: "rice-source-head"}), ("code", CELL_TRAIN, {}), ("markdown", AFTER_TRAIN, {}),
         ("markdown", SEC6, {}), ("code", CELL_ACTIVITY, {}), ("markdown", AFTER_ACTIVITY, {}),
         ("markdown", SEC7, {}), ("code", CELL_FINETUNE, {}),
         ("markdown", SEC8, {}), ("code", CELL_EVALUATE, {}),

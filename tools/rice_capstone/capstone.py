@@ -1574,7 +1574,7 @@ def stage_report(ctx: Context) -> None:
               "for four frames, [T=1 vs T=4 result, without claiming a cause]. The error maps show "
               "[pattern], and the 320 m patch grid [effect]. Labels are published map products, the sample is small "
               "and spatially clustered, and Prithvi's pretraining overlap with these places is unknown, so [bounded "
-              "claim]. Next we would [specific evidence].", ""]
+              "claim, naming how the pipelines differ beyond pretraining]. Next we would [specific evidence].", ""]
     (ctx.out / "conclusion.md").write_text("\n".join(lines), encoding="utf-8")
     write_json(ctx.out / "run_summary.json", {
         "notebook": source, "dataset": {"slug": DATASET_SLUG, "version": DATASET_VERSION, "index_sha256": INDEX_SHA256},
@@ -1607,14 +1607,25 @@ def answer_lines(metrics: Sequence[Mapping[str, Any]]) -> list[str]:
     lines += [f"- {r['system']}: F1 {_fmt(r['f1'])}, IoU {_fmt(r['iou'])}, precision {_fmt(r['precision'])}, "
               f"recall {_fmt(r['recall'])}" for r in metrics]
     better = c["f1"] is not None and (b["f1"] is None or c["f1"] > b["f1"])
-    verdict = (f"the head on frozen Prithvi-EO-2.0 features (C, F1 {_fmt(c['f1'])}) "
-               f"{'mapped rice better than' if better else 'did not map rice better than'} "
-               f"the spectral-temporal LightGBM baseline (B, F1 {_fmt(b['f1'])})")
+    verdict = (f"the frozen-Prithvi pipeline (C, F1 {_fmt(c['f1'])}) "
+               f"{'reached a higher pooled rice F1 than' if better else 'did not reach a higher pooled rice F1 than'} "
+               f"the spectral-temporal LightGBM pipeline (B, F1 {_fmt(b['f1'])})")
     lines += ["", "**Answer to the driving question, from this run:** on the labelled pixels of these 8 validation "
                   f"chips, {verdict}; calling everything non-rice (A) scored F1 {_fmt(rows['A']['f1'])}."]
     if "C-FT" in rows:
         lines += ["", f"The opt-in fine-tuned encoder (C-FT) scored F1 {_fmt(rows['C-FT']['f1'])}; it was selected on "
                       "development chips before validation was scored."]
+    lines += ["", "**What this compares (issue #22 S1):** two whole pipelines. B and C differ in temporal information "
+                  "(all 24 bins versus four quarterly frames), missing-data treatment (observed-fraction features and a "
+                  "fit-only fill versus mean-filled standardised inputs without a validity channel), class sampling (a "
+                  "class-stratified pixel sample versus every labelled pixel of the fit chips) and spatial prediction "
+                  "architecture (per-pixel trees versus an 8 x 8 logit grid bilinearly upsampled to 128 x 128), so this "
+                  "comparison does not isolate the contribution of foundation-model pretraining. The scores measure "
+                  "agreement with a published reference map, not independently established field accuracy."]
+    lines += ["", "**Three separate claims (S4):** an F1 above the all-non-rice floor shows that a system finds some "
+                  "reference-rice signal; a higher pooled F1 than the other pipeline is a comparison under the declared "
+                  "metric; neither shows that a map meets operational requirements, which this capstone does not "
+                  "assess."]
     lines += ["", "**Evidence level:** tutorial evidence from one run at teaching scale: 8 validation chips from two "
                   "neighbouring regions, scored once after every choice was frozen on development chips; map-derived "
                   "labels; no confidence intervals. It does not establish which approach is better nationally or "
