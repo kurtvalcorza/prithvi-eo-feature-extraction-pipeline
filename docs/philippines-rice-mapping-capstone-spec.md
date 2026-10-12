@@ -94,7 +94,7 @@ Reference only (not re-run): course lessons report teaching-scale F1 on the same
 
 ## 8. Controlled learner experiment
 
-Change one thing on development chips only: **number of frames, T = 1 (best single quarter) vs 4**. Keep the frozen weights, the head's recipe (architecture, optimiser, seed), the epoch count and the threshold fixed; train one head per frame count with that recipe (Kurt, 2026-10-11: the activity measures the information in one frame versus four, not C's robustness to fewer frames). Ask learners to predict first. Demonstrates that rice is identified by its season, not one snapshot. Canonical validation uses T = 4.
+Change one thing on development chips only: **number of frames, T = 1 (best single quarter) vs 4**. Keep the frozen weights, the head's recipe (architecture, optimiser, seed), the epoch count and the threshold fixed; train one head per frame count with that recipe (Kurt, 2026-10-11: the activity measures the information in one frame versus four, not C's robustness to fewer frames). Ask learners to predict first, with a neutral prompt: a single quarter may fall below, match or exceed T = 4. This is a **fixed-recipe, development-only comparison** (issue #22 M1): the T = 1 heads borrow the epoch count and threshold selected for T = 4, so it is not an equally tuned comparison of one-frame and four-frame systems, and a T = 4 advantage does not isolate seasonal progression from improved observation coverage or from settings better suited to four frames. Canonical validation uses T = 4. Optional future work (not done here): tune each variant under the same search budget; coverage-matched or temporal-order controls.
 
 ## 9. Metrics and evidence boundaries
 

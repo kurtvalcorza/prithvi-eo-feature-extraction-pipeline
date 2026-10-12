@@ -1198,6 +1198,11 @@ def stage_train_head(ctx: Context) -> None:
     ctx.receipt("train-head", selected_epoch=epoch)
 
 
+ACTIVITY_SCOPE = ("fixed-recipe, development-only: every variant reuses the epoch count and threshold selected for "
+                  "T=4, so it is not an equally tuned comparison, and it does not isolate seasonal progression from "
+                  "observation coverage or from settings that suit T=4")
+
+
 def stage_activity(ctx: Context) -> None:
     torch = _torch_setup()
     roles = ctx.records()["roles"]
@@ -1214,6 +1219,8 @@ def stage_activity(ctx: Context) -> None:
         cache = dict(np.load(ctx.work / filename))
         # one head per frame count with C's recipe, seed and selected epoch count; only the input frames differ
         # (the T=4 row reproduces C exactly). Kurt, 2026-10-11: this measures one frame's information, not C's robustness.
+        # Issue #22 M1: the T=1 heads borrow T=4's epoch count and threshold, so this is a fixed-recipe comparison, not
+        # an equally tuned one, and it does not isolate seasonal progression from observation coverage.
         state, _curve = train_head(torch, _stack(cache, roles["fit"]), fit_y, _stack(cache, roles["development"]), dev_y,
                                    epochs, select_best=False, log=lambda _m: None)
         probs = head_probabilities(torch, _load_head(torch, state), _stack(cache, roles["development"]))
@@ -1224,6 +1231,7 @@ def stage_activity(ctx: Context) -> None:
     best_single = max(single, key=lambda r: (r["f1"] if r["f1"] is not None else -1.0))
     write_csv(ctx.out / "activity.csv", rows, ["variant", "epochs", "threshold", *METRIC_COLUMNS[2:]])
     selection["activity"] = {"question": "frames T=1 (each single quarter) vs T=4, development chips only",
+                             "comparison": ACTIVITY_SCOPE,
                              "best_single_quarter": best_single["variant"], "canonical_frames": 4,
                              "decision": "canonical validation keeps T=4 (declared before the activity)"}
     write_json(ctx.out / "selection.json", selection)
@@ -1553,7 +1561,8 @@ def stage_report(ctx: Context) -> None:
     lines = answer_lines(metrics)
     lines += ["", "# Conclusion scaffold", "", "Complete in your own words:", "",
               "> On the labelled pixels of eight validation chips from two regions, [system] reached a pooled rice F1 of "
-              "[value] against [baselines]. On the development chips, [T=1 vs T=4 result]. The error maps show "
+              "[value] against [baselines]. On the development chips, under the recipe, epoch count and threshold selected "
+              "for four frames, [T=1 vs T=4 result, without claiming a cause]. The error maps show "
               "[pattern], and the 320 m patch grid [effect]. Labels are published map products, the sample is small "
               "and spatially clustered, and Prithvi's pretraining overlap with these places is unknown, so [bounded "
               "claim]. Next we would [specific evidence].", ""]

@@ -934,3 +934,32 @@ def test_review_rice_m8_the_byod_cell_shows_results_only_after_a_completed_stage
     assert "run this cell again (no Run all needed)" in refused
     trouble = next(text for kind, text in cells if kind == "markdown" and text.startswith("## Troubleshooting"))
     assert "`Refused:`" in trouble and "you do not need to Run all again" in trouble
+
+
+# ---------------------------------------------------------------------------------------- issue #22 (peer review, 2026-10-12)
+
+
+def _cells() -> list[tuple[str, str]]:
+    return [(c["cell_type"], _source(c)) for c in _notebook()["cells"]]
+
+
+def _markdown_with(anchor: str) -> str:
+    return next(text for kind, text in _cells() if kind == "markdown" and anchor in text)
+
+
+def test_issue_22_m1_the_frame_activity_is_a_fixed_recipe_comparison_without_causal_claims():
+    section = _markdown_with("## 6. Change one thing")
+    assert "fixed-recipe, development-only comparison" in section and "not an equally tuned comparison" in section
+    assert "How far below T = 4" not in section and "match it or exceed it" in section  # neutral prediction prompt
+    after = _markdown_with("**Observe and explain:**")
+    assert "more robust than its size" not in after and "supports the season-based explanation" not in after
+    assert ("Under a fixed training recipe and the epoch count and threshold selected for the four-frame system"
+            .lower() in after.lower())
+    assert "observation coverage" in after and "settings better suited to the four-frame system" in after
+    conclusion = _markdown_with("## 11. Conclude with evidence")
+    assert "consistent with rice being a seasonal signal" not in conclusion
+    source = (TOOLS / "capstone.py").read_text(encoding="utf-8")
+    assert '"comparison": ACTIVITY_SCOPE' in source and "not an equally tuned comparison" in cap.ACTIVITY_SCOPE
+    assert "without claiming a cause" in source
+    spec = (ROOT / "docs" / "philippines-rice-mapping-capstone-spec.md").read_text(encoding="utf-8")
+    assert "Demonstrates that rice is identified by its season" not in spec and "fixed-recipe" in spec

@@ -511,9 +511,9 @@ With 24 fit chips the head can memorise the fit set; the development curve is wh
 
 SEC6 = r"""## 6. Change one thing: one frame versus four · [Evaluation practice]
 
-**Predict → Change one thing → Run → Observe → Explain.** Keep the frozen Prithvi weights, the head's recipe (architecture, optimiser, seed), the epoch count (C's selected epoch) and the threshold fixed, and train one head per frame count with that recipe. Change only the number of frames: **T = 1** — only one quarter's clearest frame, tried for each of the four quarters — versus the canonical **T = 4**. Everything is scored on development chips only; validation is untouched.
+**Predict → Change one thing → Run → Observe → Explain.** This is a **fixed-recipe, development-only comparison**. Keep the frozen Prithvi weights and the head's recipe (architecture, optimiser, seed), reuse the epoch count and threshold that were selected for the four-frame head C, and train one head per input with that recipe. Change only the frames the encoder sees: **T = 1** — only one quarter's clearest frame, tried for each of the four quarters — versus the canonical **T = 4**. The T = 1 heads are not tuned separately, so this is not an equally tuned comparison of one-frame and four-frame systems. Everything is scored on development chips only; validation is untouched.
 
-**Predict before running:** which single quarter will work best? How far below T = 4 will it fall?
+**Predict before running:** which single quarter will score highest? Will it fall below T = 4, match it or exceed it — and what could explain each outcome?
 
 This activity does **not** change the canonical system: validation uses T = 4, as declared before the activity."""
 
@@ -521,12 +521,12 @@ CELL_ACTIVITY = r"""run_stage('activity')
 show_table('activity.csv', ['variant', 'epochs', 'threshold', 'f1', 'iou', 'precision', 'recall'])
 show_figures('activity_*')"""
 
-AFTER_ACTIVITY = r"""**Observe and explain:** compare the best single quarter with T = 4. The T = 4 row reproduces C's development result exactly (same recipe, seed and epochs), which shows the procedure is unchanged; each T = 1 row is a head trained with the same recipe on one-frame features, so the comparison asks how much information one frame carries, not how C copes with fewer frames. One caveat: the epoch count and threshold were chosen for T = 4 on the same development chips and the T = 1 heads borrow them, so T = 4 has a head start; part of the gap comes from that tuning, and the direction of the result is more robust than its size.
+AFTER_ACTIVITY = r"""**Observe and explain:** compare each single quarter with T = 4. The T = 4 row reproduces C's development result exactly (same recipe, seed and epochs), which shows the procedure is unchanged; each T = 1 row is a head trained with the same recipe on one-frame features, not C itself coping with fewer frames. Read the table within its limits: the epoch count and threshold were selected for T = 4 on these same development chips and the T = 1 heads borrow them, so the comparison is tilted towards T = 4, and these development chips alone establish neither the size nor the direction of a general difference.
 
 <details>
 <summary>Check your reasoning (open after answering)</summary>
 
-Usually T = 4 beats every single quarter, and the best quarter is one that catches flooding or peak green-up. That supports the season-based explanation: rice is identified by how a pixel changes, which one snapshot cannot show. If a single quarter matched T = 4 here, the honest reading is that on these eight development chips one well-timed image carried most of the signal — not that time never matters, because eight chips from four regions are a small sample.
+If T = 4 scored higher, the supported sentence is: under a fixed training recipe and the epoch count and threshold selected for the four-frame system, the four-frame input achieved higher development F1 than the single-quarter alternatives. This does not isolate whether the advantage comes from seasonal progression (flooding, green-up, harvest), from improved observation coverage (four frames fill each other's cloud gaps), or from settings better suited to the four-frame system. If a single quarter matched or exceeded T = 4, that is a legitimate result too: one well-timed image may carry most of the signal on these development chips, or the borrowed settings may happen to suit it. Separating these explanations would need each variant tuned under the same search budget, or coverage-matched and temporal-order controls; this notebook does not run them.
 
 </details>"""
 
@@ -603,7 +603,7 @@ The output above ends with **This run's answer**, written from the validation ta
 <details>
 <summary>Check your reasoning: what makes a conclusion strong? (open after writing yours)</summary>
 
-Strong: "On the labelled pixels of eight validation chips in Central and Eastern Visayas, the frozen-Prithvi head reached pooled rice F1 *x* against *y* for the LightGBM baseline and 0 for all-non-rice; on development, four frames beat the best single quarter by *z*, consistent with rice being a seasonal signal. The error maps show [where C and B differ: whole fields, edges or cloud-filled areas]. With eight clustered chips and map-derived labels, this does not establish which approach is better nationally; next we would score a larger, spatially separated test set." Weak: "Prithvi is better at mapping rice" from one pooled number.
+Strong: "On the labelled pixels of eight validation chips in Central and Eastern Visayas, the frozen-Prithvi head reached pooled rice F1 *x* against *y* for the LightGBM baseline and 0 for all-non-rice; on development, under the recipe, epoch count and threshold selected for four frames, four frames scored *z* above the best single quarter, which does not by itself show that seasonal progression caused the difference. The error maps show [where C and B differ: whole fields, edges or cloud-filled areas]. With eight clustered chips and map-derived labels, this does not establish which approach is better nationally; next we would score a larger, spatially separated test set." Weak: "Prithvi is better at mapping rice" from one pooled number.
 
 </details>
 
