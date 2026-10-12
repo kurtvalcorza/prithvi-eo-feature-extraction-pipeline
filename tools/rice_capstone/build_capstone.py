@@ -294,9 +294,15 @@ BOOTSTRAP_SECONDS = time.perf_counter() - SESSION_START
 print(f'Bootstrap took {BOOTSTRAP_SECONDS:.0f} s')
 
 
-def run_stage(stage, *options):
+REFUSED_EXIT = 3  # capstone.py's exit code for an input it refused with a message (BYOD); not a crash
+
+
+def run_stage(stage, *options, refusal_ok=False):
+    # Runs one stage in the isolated environment and streams its output once. Returns True on success; with
+    # refusal_ok, returns False when the stage refused its input (the reason is already printed above).
     log = ROOT / (stage + '.log')
     print('Running', stage, '- one process per stage; log:', log, flush=True)
+    omitted = 0
     with log.open('w', encoding='utf-8') as output:
         process = subprocess.Popen([str(PYTHON), '-u', str(ROOT / 'capstone.py'), '--root', str(ROOT), '--stage', stage, *options],
                                    env=ENV, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -305,10 +311,16 @@ def run_stage(stage, *options):
             output.flush()
             if line.strip() and len(line) < 2000:
                 print(line.rstrip(), flush=True)
+            elif line.strip():
+                omitted += 1  # an over-long line would freeze the output area; it stays in the log
         process.wait()
+    if process.returncode == REFUSED_EXIT and refusal_ok:
+        return False
     if process.returncode:
-        print(log.read_text(encoding='utf-8')[-6000:])
+        if omitted:
+            print(f'({omitted} over-long line(s) not shown; the full output is in {log})')
         raise RuntimeError(f'{stage} failed with exit {process.returncode}. Read the diagnostics above.')
+    return True
 
 
 import csv
@@ -618,7 +630,7 @@ One `.h5` file per chip-year with a unique file name, at most 200 files and 4 Gi
 
 **What happens:** every file is validated with the same rules as the sample data (a failure names the file and the broken rule); every chip is scored with the exported head at its frozen threshold (GeoTIFFs and, if labelled, per-chip metrics). With at least 6 labelled chips from at least three sites, the notebook also adapts a new head under the same protocol: sites are split into fit, development and test by a declared hash rule, the epoch and threshold are chosen on development, the test sites are scored against the all-non-rice baseline, and the adapted head is exported and reloaded from files.
 
-**Expected result / What to notice:** a per-chip table (bins, filled share, predicted rice share, whether the GeoTIFF is georeferenced and, for labelled chips, the scores) and a summary; with enough labelled sites, the adapted head's test result beside the all-non-rice baseline and the exported canonical head on the same test sites, so you can see whether adapting helped; and a download link for `byod_results.zip`. A refused file names the file and the broken rule.
+**Expected result / What to notice:** a per-chip table (bins, filled share, predicted rice share, whether the GeoTIFF is georeferenced and, for labelled chips, the scores) and a summary; with enough labelled sites, the adapted head's test result beside the all-non-rice baseline and the exported canonical head on the same test sites, so you can see whether adapting helped; and a download link for `byod_results.zip`. A refused upload prints one `Refused:` message naming each file and the broken rule, shows no results and keeps none from earlier attempts; fix the file and run this cell again (no Run all needed).
 
 **Privacy:** your files stay in this runtime; nothing is sent to any other service. Do not upload confidential, restricted, licensed or personal data unless you are authorised to process it in Google Colab."""
 
@@ -631,10 +643,13 @@ if USE_BYOD:
         sources = [Path(name).resolve() for name in files.upload()]
     # The stage empties its input folder and its outputs first, refuses unsafe archives and duplicate file names,
     # validates every chip, then scores, adapts, exports and bundles byod_results.zip.
-    run_stage('byod', '--input', *[str(source) for source in sources])
-    show_table('byod/byod_canonical_head.csv')
-    print(json.dumps(json.loads((ROOT / 'outputs' / 'byod' / 'byod_summary.json').read_text()), indent=1)[:4000])
-    display(FileLink(str(ROOT / 'outputs' / 'byod_results.zip')))
+    if run_stage('byod', '--input', *[str(source) for source in sources], refusal_ok=True):
+        show_table('byod/byod_canonical_head.csv')
+        print(json.dumps(json.loads((ROOT / 'outputs' / 'byod' / 'byod_summary.json').read_text()), indent=1)[:4000])
+        display(FileLink(str(ROOT / 'outputs' / 'byod_results.zip')))
+    else:  # a refused upload is a recoverable outcome, not a crash: nothing was scored and no older result is shown
+        print('Nothing was scored, and no BYOD results from earlier attempts are kept. Fix the file(s) named above, '
+              'then run this cell again (no Run all needed).')
 else:
     print('BYOD not run (USE_BYOD = False).')"""
 
@@ -652,7 +667,7 @@ TROUBLE = r"""## Troubleshooting
 | "validation was already scored" / fine-tune refuses | Scoring happens once per run directory. Start a fresh runtime to change a development choice. |
 | B beats C, or C beats B | Preserve the result and examine the error maps; either outcome is valid. |
 | Reload parity fails | Preserve `verification.json` and the logs; the release cannot be qualified until the mismatch is explained. |
-| BYOD file refused | Read the message: it names the key, shape, dtype, value range or label rule that failed. Fix the file and retry. |"""
+| BYOD file refused (`Refused:` in the BYOD cell) | Read the message: it names the file and the key, shape, dtype, value range or label rule that failed. Nothing was scored. Fix the file and run the BYOD cell again; you do not need to Run all again. |"""
 
 LICENCES = r"""## Data, model, attribution and licences
 
