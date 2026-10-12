@@ -367,6 +367,59 @@ def split_fit_dev(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     raise ValueError("no region assignment satisfies the declared development constraints")
 
 
+CHIP_METRES = CHIP * PIXEL_METRES  # 2560 m
+
+
+def footprint_gap(a: Mapping[str, Any], b: Mapping[str, Any]) -> tuple[float, bool]:
+    """Ground distance in metres between two chip squares given by upper-left x_min / y_max (0 when they touch or
+    overlap) and whether they share positive area."""
+    dx = abs(float(a["x_min"]) - float(b["x_min"])) - CHIP_METRES
+    dy = abs(float(a["y_max"]) - float(b["y_max"])) - CHIP_METRES
+    return math.hypot(max(dx, 0.0), max(dy, 0.0)), dx < 0 and dy < 0
+
+
+def spatial_audit(chips: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Audit of role separation (issue #22 S2). `chips` rows: id, site, year, role and, when georeferenced, x_min and
+    y_max (EPSG:32651 metres). Reports unique sites, sites seen in several years, sites or footprints shared across
+    roles, and the minimum ground distance between chips of different roles. Grouping by region or site reduces
+    leakage risk; it does not by itself guarantee distance, which is what this measures."""
+    by_site: dict[str, set] = {}
+    for c in chips:
+        by_site.setdefault(str(c["site"]), set()).add(c["role"])
+    years: dict[str, set] = {}
+    for c in chips:
+        years.setdefault(str(c["site"]), set()).add(c["year"])
+    placed = [c for c in chips if c.get("x_min") is not None and c.get("y_max") is not None]
+    roles = sorted({c["role"] for c in chips})
+    nearest: dict[str, Any] = {}
+    overlapping, touching = [], []
+    for i, a in enumerate(placed):
+        for b in placed[i + 1:]:
+            if a["role"] == b["role"]:
+                continue
+            gap, overlap = footprint_gap(a, b)
+            pair = "-".join(sorted((a["role"], b["role"])))
+            if pair not in nearest or gap < nearest[pair][0]:
+                nearest[pair] = (round(gap, 1), " / ".join(sorted((a["id"], b["id"]))))
+            if overlap:
+                overlapping.append(sorted((a["id"], b["id"])))
+            elif gap == 0:
+                touching.append(sorted((a["id"], b["id"])))
+    return {
+        "chips": len(chips), "unique_sites": len(by_site), "roles": roles,
+        "sites_with_repeated_years": sum(len(v) > 1 for v in years.values()),
+        "max_years_per_site": max((len(v) for v in years.values()), default=0),
+        "sites_in_more_than_one_role": sorted(s for s, r in by_site.items() if len(r) > 1),
+        "georeferenced_chips": len(placed),
+        "cross_role_overlapping_footprints": sorted(overlapping),
+        "cross_role_touching_footprints": sorted(touching),
+        "min_cross_role_distance_m": {k: v[0] for k, v in sorted(nearest.items())},
+        "nearest_cross_role_chips": {k: v[1] for k, v in sorted(nearest.items())},
+        "meaning": "ground distance between chip squares of different roles (0 = touching or overlapping); grouping "
+                   "by region or site reduces leakage risk but does not by itself guarantee distance",
+    }
+
+
 def check_roles(roles: Mapping[str, Sequence[str]]) -> None:
     seen: dict[str, str] = {}
     for role, ids in roles.items():
@@ -824,6 +877,8 @@ def stage_prepare(ctx: Context) -> None:
     roles = {"fit": split["fit"], "development": split["development"], "validation": validation}
     check_roles(roles)
     role_of = {cid: role for role, ids in roles.items() for cid in ids}
+    audit = spatial_audit([{"id": chip_id(r), "site": r["group_id"], "year": r["year"], "role": role_of[chip_id(r)],
+                            "x_min": r["x_min"], "y_max": r["y_max"]} for r in rows])
     chips: dict[str, Any] = {}
     table = []
     valid_counts = np.zeros(N_BINS)
@@ -867,6 +922,7 @@ def stage_prepare(ctx: Context) -> None:
         "development_example": f"{DEVELOPMENT_EXAMPLE_GROUP} (a parent training sample) is never read",
         "package_sha256_downloaded": package,
     })
+    write_json(ctx.out / "spatial_audit.json", audit)  # issue #22 S2: measured separation, not assumed
     _prepare_figures(ctx, chips, table, valid_counts)
     write_json(ctx.out / "prepare.json", {
         "layout": layout, "chips": len(chips), "roles": {k: len(v) for k, v in roles.items()},
@@ -1726,6 +1782,40 @@ def byod_group(stem: str, attrs: Mapping[str, Any]) -> str:
     return str(attrs["group"]) if "group" in attrs else re.sub(r"_(19|20)\d\d$", "", stem)
 
 
+def chip_content_digest(chip: Mapping[str, Any]) -> str:
+    """SHA-256 of a chip's S2 (NaN-normalised), S2_valid and label arrays: equal for renamed copies of one chip."""
+    digest = hashlib.sha256()
+    digest.update(np.ascontiguousarray(np.nan_to_num(np.asarray(chip["S2"], dtype=np.float32), nan=-9999.0)).tobytes())
+    digest.update(np.ascontiguousarray(np.asarray(chip["S2_valid"], dtype=np.uint8)).tobytes())
+    if chip.get("label") is not None:
+        digest.update(np.ascontiguousarray(np.asarray(chip["label"], dtype=np.uint8)).tobytes())
+    return digest.hexdigest()
+
+
+def byod_grouping_check(ids: Sequence[str], chips: Mapping[str, Mapping[str, Any]],
+                        groups: Mapping[str, str]) -> dict[str, Any]:
+    """Issue #22 S2: how trustworthy the BYOD site grouping is. Records which site ids came from an HDF5 attribute and
+    which fell back to the file name (unverified), finds chips with identical content (renamed duplicates) and
+    georeferenced chips whose footprints overlap on the ground although they carry different site ids. Either of the
+    last two would let one place sit in fit and test at once, so adaptation is not run when they occur."""
+    by_digest: dict[str, list[str]] = {}
+    for cid in ids:
+        by_digest.setdefault(chip_content_digest(chips[cid]), []).append(cid)
+    placed = [cid for cid in ids if "x_min" in chips[cid]["attrs"] and "y_max" in chips[cid]["attrs"]]
+    conflicts = []
+    for i, a in enumerate(placed):
+        for b in placed[i + 1:]:
+            if groups[a] != groups[b] and footprint_gap(chips[a]["attrs"], chips[b]["attrs"])[1]:
+                conflicts.append(sorted((a, b)))
+    return {
+        "site_ids_from_attribute": sorted(c for c in ids if "group" in chips[c]["attrs"]),
+        "site_ids_from_file_name_unverified": sorted(c for c in ids if "group" not in chips[c]["attrs"]),
+        "duplicate_content": sorted(sorted(v) for v in by_digest.values() if len(v) > 1),
+        "overlapping_footprints_with_different_sites": sorted(conflicts),
+        "georeferenced": len(placed),
+    }
+
+
 def byod_split(ids: Sequence[str], groups: Mapping[str, str], rice: Mapping[str, bool],
                nonrice: Mapping[str, bool]) -> dict[str, list[str]]:
     """Fit / development / test by whole group (SHA-256 order of 'rice-capstone-byod:<k>:<group>', about 60/20/20);
@@ -1868,10 +1958,25 @@ def stage_byod(ctx: Context, sources: Sequence[Path]) -> None:
         groups = {cid: byod_group(cid, chips[cid]["attrs"]) for cid in labelled}
         rice = {cid: bool((chips[cid]["label"] == 1).any()) for cid in labelled}
         nonrice = {cid: bool((chips[cid]["label"] == 0).any()) for cid in labelled}
+        grouping = byod_grouping_check(labelled, chips, groups)
+        summary["grouping"] = grouping
+        if grouping["site_ids_from_file_name_unverified"]:
+            print(f"{len(grouping['site_ids_from_file_name_unverified'])} labelled chip(s) have no group_id/group "
+                  "attribute: their site is taken from the file name, which is not verified. Add group_id so that "
+                  "every year of one place gets the same site.", flush=True)
+        blocked = []
+        if grouping["duplicate_content"]:
+            blocked.append(f"chips with identical content (renamed copies?): {grouping['duplicate_content']}")
+        if grouping["overlapping_footprints_with_different_sites"]:
+            blocked.append("chips that overlap on the ground carry different site ids: "
+                           f"{grouping['overlapping_footprints_with_different_sites']}; give them the same group_id")
         try:
+            if blocked:
+                raise ChipError("; ".join(blocked))
             split = byod_split(labelled, groups, rice, nonrice)
         except ChipError as exc:
             summary["adaptation"] = f"not run: {exc}"
+            print(f"Adaptation not run: {exc}", flush=True)
         else:
             ys = {cid: chips[cid]["label"] for cid in labelled}
             fx = np.stack([features[c] for c in split["fit"]])
@@ -1895,6 +2000,10 @@ def stage_byod(ctx: Context, sources: Sequence[Path]) -> None:
                 require_head_serialization_parity(parity)
             summary["adaptation"] = {
                 "split": split, "selected_epoch": select_epoch(curve), "threshold": sel["threshold"],
+                "spatial_audit": spatial_audit([
+                    {"id": c, "site": groups[c], "year": c.rsplit("_", 1)[-1], "role": role, **{k: chips[c]["attrs"][k] for k in
+                                                                         ("x_min", "y_max") if k in chips[c]["attrs"]}}
+                    for role, ids in split.items() for c in ids]),
                 "test_all_non_rice": pooled([np.zeros_like(p) for p in test_probs], test_labels, 0.5),
                 "test_canonical_head": pooled([canonical[c] for c in split["test"]], test_labels,
                                               manifest["threshold"]),

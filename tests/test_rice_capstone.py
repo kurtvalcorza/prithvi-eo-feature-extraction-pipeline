@@ -1140,3 +1140,61 @@ def test_issue_22_s1_s4_s5_whole_pipeline_claims_spatial_detail_and_responsive_a
     ids = {c["id"]: _source(c) for c in _notebook()["cells"]}
     assert "show_source('select_frames', 'prithvi_input')" in ids["rice-source-input"]
     assert "show_source('_head_module')" in ids["rice-source-head"]
+
+
+def test_issue_22_s2_spatial_audit_measures_separation_instead_of_assuming_it():
+    def chip(cid, site, role, x, y, year=2020):
+        return {"id": cid, "site": site, "year": year, "role": role, "x_min": x, "y_max": y}
+
+    audit = cap.spatial_audit([
+        chip("a", "s1", "fit", 0, 0), chip("b", "s2", "development", 2560, 0),  # touching across roles
+        chip("c", "s3", "validation", 1000, 0),  # overlaps a
+        chip("d", "s1", "development", 0, 0, 2021),  # site s1 in two roles and two years
+        chip("e", "s5", "fit", 100_000, 0),
+    ])
+    assert audit["unique_sites"] == 4 and audit["sites_with_repeated_years"] == 1
+    assert audit["sites_in_more_than_one_role"] == ["s1"]
+    assert ["a", "c"] in audit["cross_role_overlapping_footprints"]
+    assert ["a", "b"] in audit["cross_role_touching_footprints"]
+    assert audit["min_cross_role_distance_m"]["development-fit"] == 0.0
+    assert cap.footprint_gap({"x_min": 0, "y_max": 0}, {"x_min": 5120, "y_max": 0}) == (2560.0, False)
+    source = (TOOLS / "capstone.py").read_text(encoding="utf-8")
+    prepare = source[source.index("def stage_prepare"):source.index("def _with_label_two")]
+    assert 'ctx.out / "spatial_audit.json"' in prepare
+    sec3 = _markdown_with("## 3. Predict, declare the protocol")
+    assert "keep neighbouring chips out of both roles" not in sec3 and "does not by itself guarantee distance" in sec3
+    baseline = next(text for kind, text in _cells() if kind == "code" and "run_stage('baseline')" in text)
+    assert baseline.startswith("show_record('spatial_audit.json')")
+
+
+def test_issue_22_s2_byod_grouping_flags_unverified_sites_duplicates_and_overlapping_footprints(tmp_path, monkeypatch):
+    h5py = pytest.importorskip("h5py")
+    ctx, sources = _byod_standins(tmp_path, monkeypatch)
+    (sources / "site0_2020.h5").rename(sources / "copy_a_2020.h5")
+    import shutil
+
+    shutil.copy(sources / "copy_a_2020.h5", sources / "copy_b_2021.h5")  # a renamed duplicate
+    with h5py.File(sources / "copy_b_2021.h5", "a") as handle:
+        handle.attrs["group_id"] = "elsewhere"
+    with h5py.File(sources / "site1_2020.h5", "a") as handle:
+        del handle.attrs["group_id"]  # falls back to the file name
+    assert cap.main(["--root", str(ctx.root), "--stage", "byod", "--input", str(sources)]) == 0
+    summary = json.loads((ctx.out / "byod" / "byod_summary.json").read_text(encoding="utf-8"))
+    assert summary["grouping"]["duplicate_content"] == [["copy_a_2020", "copy_b_2021"]]
+    assert summary["grouping"]["site_ids_from_file_name_unverified"] == ["site1_2020"]
+    assert summary["adaptation"].startswith("not run: chips with identical content")
+    assert (ctx.out / "byod_results.zip").is_file()  # prediction still completes
+
+    chips = {f"c{i}": {"S2": np.full((1,), i, np.float32), "S2_valid": np.ones(1, np.uint8), "label": None,
+                       "attrs": {"x_min": 1000.0 * i, "y_max": 0.0, "group": f"g{i}"}} for i in range(2)}
+    check = cap.byod_grouping_check(["c0", "c1"], chips, {"c0": "g0", "c1": "g1"})
+    assert check["overlapping_footprints_with_different_sites"] == [["c0", "c1"]] and not check["duplicate_content"]
+
+
+def test_issue_22_s2_successful_byod_adaptation_records_its_spatial_audit(tmp_path, monkeypatch):
+    ctx, sources = _byod_standins(tmp_path, monkeypatch)
+    assert cap.main(["--root", str(ctx.root), "--stage", "byod", "--input", str(sources)]) == 0
+    summary = json.loads((ctx.out / "byod" / "byod_summary.json").read_text(encoding="utf-8"))
+    audit = summary["adaptation"]["spatial_audit"]
+    assert audit["chips"] == 6 and audit["unique_sites"] == 6 and audit["georeferenced_chips"] == 0
+    assert summary["grouping"]["site_ids_from_file_name_unverified"] == []

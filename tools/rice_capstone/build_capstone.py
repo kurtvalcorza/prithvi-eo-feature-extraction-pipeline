@@ -401,6 +401,14 @@ def show_record(name):
                                       ('selected_bins', 'Frames (bins)'), ('min_selected_valid_fraction', 'Min valid'),
                                       ('filled_fraction', 'Filled')])
         display_rows(value['refusal_probes'], [('probe', 'Refusal probe'), ('refused', 'Refused'), ('message', 'Message')])
+    elif name == 'spatial_audit.json':
+        print(f"Chips: {value['chips']} | unique sites: {value['unique_sites']} | sites seen in more than one year: "
+              f"{value['sites_with_repeated_years']} | sites in more than one role: {value['sites_in_more_than_one_role'] or 'none'}")
+        print('Footprints shared across roles:', value['cross_role_overlapping_footprints'] or 'none',
+              '| touching across roles:', value['cross_role_touching_footprints'] or 'none')
+        display_rows([{'pair': k, 'metres': v, 'chips': value['nearest_cross_role_chips'][k]}
+                      for k, v in value['min_cross_role_distance_m'].items()],
+                     [('pair', 'Roles'), ('metres', 'Minimum distance (m)'), ('chips', 'Closest chips')])
     elif name == 'selection.json':
         for key in ('B', 'C', 'C-FT'):
             if key in value:
@@ -453,7 +461,7 @@ SEC3 = r"""## 3. Predict, declare the protocol and run the baselines · [Evaluat
 
 **Predict first:** where do you expect a pretrained model and a hand-built baseline to disagree — field edges, cloudy chips, small fields, wet but non-rice land? Write one guess.
 
-**Roles.** The 32 training chips are split by **whole region** into **fit** (trains models) and **development** (makes every choice) with a declared, seeded rule: regions are ordered by a SHA-256 hash and added to development until it holds about 25 % of chips with at least two rice chips. Whole regions keep neighbouring chips out of both roles, because nearby pixels and chips are not independent [5]. The 8 **validation** chips are scored once, after every choice is frozen. The development example is never used.
+**Roles.** The 32 training chips are split by **whole region** into **fit** (trains models) and **development** (makes every choice) with a declared, seeded rule: regions are ordered by a SHA-256 hash and added to development until it holds about 25 % of chips with at least two rice chips. Grouping by whole region reduces the risk that neighbouring chips land in different roles, because nearby pixels and chips are not independent [5]; it does not by itself guarantee distance, since chips on either side of a regional boundary can still be close. So the prepare stage measures it: the first table below (`spatial_audit.json`) lists the unique sites, any site seen in several years or in more than one role, any footprint shared or touching across roles, and the minimum ground distance between chips of different roles. The 8 **validation** chips are scored once, after every choice is frozen. The development example is never used.
 
 **Frozen rules (written to `selection.json`).**
 - A threshold is chosen on development from 0.10 to 0.90 in steps of 0.05 by the highest pooled development rice F1; ties go to the threshold closest to 0.5, then the lower one. A pixel is rice when its score is **≥** the threshold.
@@ -466,13 +474,14 @@ SEC3 = r"""## 3. Predict, declare the protocol and run the baselines · [Evaluat
 
 **Metrics.** Counts are pooled over every pixel with `label ≠ 255`. Rice F1 is primary; IoU, precision and recall are reported beside it, and accuracy only to show why it misleads. For an imbalanced class, precision-based measures stay informative where accuracy does not [6]. A ratio with a zero denominator is reported as **undefined** with its reason, never as 0 or 1.
 
-**Expected result:** B's threshold sweep on development and a two-row development table."""
+**Expected result:** the spatial audit, then B's threshold sweep on development and a two-row development table."""
 
-CELL_BASELINE = r"""run_stage('baseline')
+CELL_BASELINE = r"""show_record('spatial_audit.json')  # measured by the prepare stage: how far apart the roles really are
+run_stage('baseline')
 show_record('selection.json')
 show_table('development_metrics.csv', ['system', 'threshold', 'f1', 'iou', 'precision', 'recall', 'accuracy', 'scored_pixels'])"""
 
-AFTER_BASELINE = r"""**What to notice:** A's accuracy equals the share of non-rice pixels, while its recall and F1 are 0 and its precision is undefined (it never predicts rice). Read B's sweep around the selected threshold: a broad plateau means the choice is not fragile.
+AFTER_BASELINE = r"""**What to notice:** in the spatial audit of the pinned dataset, every chip is a different site seen in one year, no footprint is shared or touches across roles, and the closest fit and development chips are about 29 km apart (every validation chip is at least about 190 km from every training chip; distances computed from the pinned index). That is measured separation for these chips, not a guarantee of independence: pixels within a chip, and chips within one role, remain clustered. A's accuracy equals the share of non-rice pixels, while its recall and F1 are 0 and its precision is undefined (it never predicts rice). Read B's sweep around the selected threshold: a broad plateau means the choice is not fragile.
 
 <details>
 <summary>Check your reasoning (open after answering)</summary>
@@ -655,11 +664,11 @@ Switched off by default, so Run all never waits for an upload. After Run all has
 | `S2` | float32 `[24, 6, 128, 128]`: 24 equal calendar bins × bands B2, B3, B4, B8A, B11, B12 in that order; surface reflectance (digital number × 0.0001); NaN allowed where `S2_valid` = 0 |
 | `S2_valid` | 0/1 `[24, 128, 128]` |
 | `label` | uint8 `[128, 128]`: 0 non-rice, 1 rice, 255 ignore — needed for scoring and adaptation; optional for prediction only |
-| attributes (optional) | Location, either this dataset's `affine` (JSON `[a, b, c, d, e, f]`) with `crs` = `EPSG:32651`, used only for a 20 m north-up grid, or plain `x_min`, `y_max` (EPSG:32651 metres, upper-left corner); a chip without a usable location is still scored, its GeoTIFF has no location and the notebook says so. Site: `group_id` or `group` (default: the file name without a trailing `_YYYY`) |
+| attributes (optional) | Location, either this dataset's `affine` (JSON `[a, b, c, d, e, f]`) with `crs` = `EPSG:32651`, used only for a 20 m north-up grid, or plain `x_min`, `y_max` (EPSG:32651 metres, upper-left corner); a chip without a usable location is still scored, its GeoTIFF has no location and the notebook says so. Site: `group_id` or `group`. Without either, the site is the file name without a trailing `_YYYY`; that grouping is **unverified** (a renamed file becomes a new site), so the summary lists those chips and the cell warns |
 
 One `.h5` file per chip-year with a unique file name, at most 200 files and 4 GiB in total; a `.zip` with an absolute or `..` member is refused. Values above 2.0 mean the file stores reflectance × 10,000; it is refused, not rescaled. Other keys (AlphaEarth, `label_raw`) are ignored.
 
-**What happens:** every file is validated with the same rules as the sample data (a failure names the file and the broken rule); every chip is scored with the exported head at its frozen threshold (GeoTIFFs and, if labelled, per-chip metrics). With at least 6 labelled chips from at least three sites, the notebook also adapts a new head under the same protocol: sites are split into fit, development and test by a declared hash rule, the epoch and threshold are chosen on development, the test sites are scored against the all-non-rice baseline, and the adapted head is exported. Its saved weights are then read back and re-applied to the cached features of the test chips: the scores must agree within 0.0001 and every rice/non-rice decision must be identical (**head-serialization parity**). If that check fails, the cell stops with an error, the adapted head is discarded and no `byod_results.zip` is written. This check covers the saved head only; unlike Section 10, it does not rebuild the base model or recompute features in a fresh process.
+**What happens:** every file is validated with the same rules as the sample data (a failure names the file and the broken rule); every chip is scored with the exported head at its frozen threshold (GeoTIFFs and, if labelled, per-chip metrics). With at least 6 labelled chips from at least three sites, the notebook also adapts a new head under the same protocol: sites are split into fit, development and test by a declared hash rule (adaptation is not run if two labelled chips have identical content, or if georeferenced chips that overlap on the ground carry different site ids, because either would put one place in two roles; the summary's `grouping` and `spatial_audit` records show the site sources and the minimum distances between roles), the epoch and threshold are chosen on development, the test sites are scored against the all-non-rice baseline, and the adapted head is exported. Its saved weights are then read back and re-applied to the cached features of the test chips: the scores must agree within 0.0001 and every rice/non-rice decision must be identical (**head-serialization parity**). If that check fails, the cell stops with an error, the adapted head is discarded and no `byod_results.zip` is written. This check covers the saved head only; unlike Section 10, it does not rebuild the base model or recompute features in a fresh process.
 
 **Expected result / What to notice:** a per-chip table (bins, filled share, predicted rice share, whether the GeoTIFF is georeferenced and, for labelled chips, the scores) and a summary; with enough labelled sites, the adapted head's test result beside the all-non-rice baseline and the exported canonical head on the same test sites, so you can see whether adapting helped; and a download link for `byod_results.zip`. A refused upload prints one `Refused:` message naming each file and the broken rule, shows no results and keeps none from earlier attempts; fix the file and run this cell again (no Run all needed).
 
