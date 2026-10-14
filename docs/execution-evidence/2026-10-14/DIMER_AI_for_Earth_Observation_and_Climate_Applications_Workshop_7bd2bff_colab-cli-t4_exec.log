@@ -1,0 +1,155 @@
+[colab] Parsing notebook '/home/kurt/colab-runs/prithvi-eo-feature-extraction-pipeline-7bd2bff-ee4724/DIMER_AI_for_Earth_Observation_and_Climate_Applications_Workshop_7bd2bff_colab-cli-t4.ipynb'...
+[colab] Executing cell 1/20 - Install the tested notebook runtime into an isolated environment...
+{'isolated_environment': '/content/dimer_eo_env', 'isolated_python': '3.12.12', 'kernel_python': '3.13.15', 'locked_packages': 133, 'setup_seconds': 58}
+[colab] Executing cell 2/20 - Route the remaining cells to the isolated environment...
+Every later code cell now runs in /content/dimer_eo_env/bin/python (pid 5511).
+[colab] Executing cell 3/20 - Verify the tested runtime...
+{'python': '3.12.12', 'python_executable': '/content/dimer_eo_env/bin/python', 'execution': 'isolated environment', 'torch': '2.14.0+cu130', 'torch_cuda': '13.0', 'cudnn': 92400, 'cuda_available': True, 'gpu': 'Tesla T4', 'gpu_memory_gib': 14.56, 'numpy': '2.5.3', 'tifffile': '2026.9.15', 'terratorch': '1.2.13', 'safetensors': '0.8.0', 'huggingface_hub': '1.32.0', 'matplotlib': '3.10.9', 'pandas': '2.3.3'}
+[colab] Executing cell 4/20 - Notebook controls...
+{'run_id': '20261014T231137Z-ae5917', 'device': 'cuda', 'precision': {'foundation': 'float32', 'flood': 'float16 autocast', 'burnscar': 'float16 autocast', 'crop': 'float16 autocast'}, 'output_root': '/content/outputs', 'seed': 42}
+[colab] Executing cell 5/20 - acff2ba5...
+capability                                                                   model_id     revision    license                                                new_scene eval_chips
+foundation                                    ibm-nasa-geospatial/Prithvi-EO-2.0-300M 9eb1b1102806 Apache-2.0                                                        —          —
+     flood                    ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen1Floods11 91ce9d38086a Apache-2.0                                  India_900498_S2Hand.tif         12
+  burnscar                          ibm-nasa-geospatial/Prithvi-EO-2.0-300M-BurnScars a3f2c410e45b Apache-2.0 subsetted_512x512_HLS.S30.T10SFF.2018190.v1.4_merged.tif         12
+      crop ibm-nasa-geospatial/Prithvi-EO-1.0-100M-multi-temporal-crop-classification b53a88b8da67 Apache-2.0                                  chip_102_345_merged.tif         12
+[colab] Executing cell 6/20 - 7fffe217...
+[colab] Executing cell 7/20 - 732ca490...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+streamed 2.46 GiB in 43 s (0 resumed connection(s)); kept 24 verified members
+streamed 1.10 GiB in 16 s (0 resumed connection(s)); kept 24 verified members
+capability              role                                                       license  items   MiB
+  burnscar evaluation (test) CC BY 4.0 (NASA IMPACT / University of Alabama in Huntsville)     12 78.05
+  burnscar         new-scene                        Apache-2.0 (model repository examples)      1  6.00
+      crop evaluation (test)                                 CC BY 4.0 (NASA IMPACT / IBM)     12 21.29
+      crop         new-scene                              Apache-2.0 (demonstration Space)      1  1.72
+     flood evaluation (test)     CC BY 4.0 (Cloud to Street; Bonafilia et al., CVPRW 2020)     12 27.03
+     flood         new-scene                        Apache-2.0 (model repository examples)      1  2.05
+foundation   foundation-demo                        Apache-2.0 (model repository examples)      4 11.50
+preprocessing: 13-band Sentinel-2 L1C stack reduced to bands [1, 2, 3, 8, 11, 12] (B2, B3, B4, B8A, B11, B12) — 13 input(s): flood/Ghana_313799, flood/Ghana_319168, flood/India_592446 …
+preprocessing: values above 2 read as reflectance × 10 000 and scaled by 1e-4 — 13 input(s): flood/Ghana_313799, flood/Ghana_319168, flood/India_592446 …
+{'flood': 12, 'burnscar': 12, 'crop': 12} labelled evaluation chips validated; foundation stack shape: (6, 4, 448, 560)
+[colab] Executing cell 8/20 - 492ccc64...
+<Figure size 1500x1000 with 6 Axes>
+
+[Image saved to: /tmp/tmpw0o8v_c2.png]
+                           input       band       min      mean       max
+          foundation date 1 (DN)       BLUE -113.0000  772.2126 3056.0000
+          foundation date 1 (DN)      GREEN  -46.0000 1129.0518 3761.0000
+          foundation date 1 (DN)        RED   14.0000 1618.6709 4518.0000
+          foundation date 1 (DN) NIR_NARROW   72.0000 2385.0425 5513.0000
+          foundation date 1 (DN)     SWIR_1  194.0000 3080.0100 6124.0000
+          foundation date 1 (DN)     SWIR_2  125.0000 2464.9578 5654.0000
+flood Ghana_313799 (reflectance)       BLUE    0.0936    0.1130    0.2992
+flood Ghana_313799 (reflectance)      GREEN    0.0775    0.1103    0.2979
+flood Ghana_313799 (reflectance)        RED    0.0499    0.0799    0.3033
+flood Ghana_313799 (reflectance) NIR_NARROW    0.0938    0.3442    0.5372
+flood Ghana_313799 (reflectance)     SWIR_1    0.0391    0.1802    0.4515
+flood Ghana_313799 (reflectance)     SWIR_2    0.0186    0.0811    0.3522
+<Figure size 1800x480 with 4 Axes>
+
+[Image saved to: /tmp/tmpkdoohq83.png]
+  date   acquired
+date 1 2018-01-26
+date 2 2018-04-16
+date 3 2018-07-20
+date 4 2018-09-23
+[colab] Executing cell 9/20 - 46cac0ce...
+/content/dimer_eo_env/lib/python3.12/site-packages/torch/jit/_script.py:1491: FutureWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+[colab] Executing cell 10/20 - f369c51e...
+GPU MiB still allocated after release: 8.1
+<Figure size 2300x550 with 5 Axes>
+
+[Image saved to: /tmp/tmp0nvfd08v.png]
+                     date 1 (2018-01-26)  date 2 (2018-04-16)  date 3 (2018-07-20)  date 4 (2018-09-23)
+date 1 (2018-01-26)                1.000                0.992                0.982                0.978
+date 2 (2018-04-16)                0.992                1.000                0.995                0.976
+date 3 (2018-07-20)                0.982                0.995                1.000                0.985
+date 4 (2018-09-23)                0.978                0.976                0.985                1.000
+{'embedding_dim': 1024, 'token_semantics': 'final normalised encoder layer; CLS token and mean over all patch tokens', 'reconstruction': {'mask_ratio': 0.75, 'masked_mse': 0.077686, 'mean_fill_mse': 0.128289}}
+[colab] Executing cell 11/20 - e3d309fd...
+[colab] Executing cell 12/20 - 61369c4a...
+<Figure size 1800x1300 with 13 Axes>
+
+[Image saved to: /tmp/tmpkc92_yby.png]
+                              model  baseline (all 'no water')
+positive_iou                 0.7301                     0.0000
+f1                           0.8440                     0.0000
+precision                    0.9251                     0.0000
+recall                       0.7760                     0.0000
+pixel_accuracy               0.9440                     0.8049
+predicted_positive_fraction  0.1637                     0.0000
+{'reference_positive_fraction': 0.1951, 'labelled_pixels': 2859426, 'GPU MiB still allocated after release': 8.1}
+[colab] Executing cell 13/20 - b887062e...
+<Figure size 1800x1300 with 13 Axes>
+
+[Image saved to: /tmp/tmp2f82xh2v.png]
+                              model  baseline (all 'not burned')
+positive_iou                 0.9250                       0.0000
+f1                           0.9611                       0.0000
+precision                    0.9528                       0.0000
+recall                       0.9695                       0.0000
+pixel_accuracy               0.9833                       0.7869
+predicted_positive_fraction  0.2169                       0.0000
+{'reference_positive_fraction': 0.2131, 'labelled_pixels': 3145652, 'GPU MiB still allocated after release': 8.1}
+[colab] Executing cell 14/20 - 4797da73...
+[colab] Executing cell 15/20 - cb180a5b...
+<Figure size 1900x1000 with 8 Axes>
+
+[Image saved to: /tmp/tmpu1qdd2zz.png]
+                      model  baseline (all 'Natural Vegetation')
+mean_iou             0.4379                               0.0105
+mean_class_accuracy  0.6239                               0.0769
+pixel_accuracy       0.5905                               0.1371
+                         IoU  recall  reference fraction
+Natural Vegetation    0.2494  0.3070              0.1371
+Forest                0.4288  0.6053              0.1091
+Corn                  0.5000  0.5776              0.0968
+Soybeans              0.5295  0.7010              0.0852
+Wetlands              0.4026  0.5847              0.1034
+Developed/Barren      0.3855  0.5851              0.1020
+Open Water            0.8090  0.9778              0.0470
+Winter Wheat          0.5502  0.6855              0.0629
+Alfalfa               0.3857  0.7114              0.0472
+Fallow/Idle Cropland  0.3230  0.3890              0.0537
+Cotton                0.4321  0.7559              0.0483
+Sorghum               0.4158  0.8020              0.0549
+Other                 0.2812  0.4286              0.0522
+{'GPU MiB still allocated after release': 8.1}
+[colab] Executing cell 16/20 - 18696399...
+| capability | model | primary_measure | model_value | baseline | baseline_value
+---|---|---|---|---|---|---                                                     
+0 | EO representation / reconstruction | ibm-nasa-geospatial/Prithvi-EO-2.0-300M
+| masked MSE (standardised) | 0.077686 | mean fill | 0.128289                   
+1 | flood | ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen... | water IoU |     
+0.730100 | all negative | 0.000000                                              
+2 | burnscar | ibm-nasa-geospatial/Prithvi-EO-2.0-300M-BurnScars | burn scar IoU
+| 0.925000 | all negative | 0.000000                                            
+3 | crop | ibm-nasa-geospatial/Prithvi-EO-1.0-100M-multi-... | mean IoU |       
+0.437900 | majority class (Natural Vegetation) | 0.010500                       
+PosixPath('outputs/workshop_summary.json')
+[colab] Executing cell 17/20 - Optional BYOD inference...
+BYOD disabled — canonical Run all path complete.
+[colab] Executing cell 18/20 - 33f19388...
+{'run_id': '20261014T231137Z-ae5917', 'manifest': 'outputs/provenance/experiment_manifest.json', 'report_bundle': '/content/outputs_DIMER_EO_Workshop_Report_20261014T231137Z-ae5917.zip', 'report_bundle_sha256': '31e6c17bc8319e8ddc50771bdd4d6668303cb651a77e39eec9f146e2a2e94196', 'files_packaged': 20, 'optional_outputs': [], 'files_not_from_this_run': 0}
+[colab] Executing cell 19/20 - Controlled change: reconstruction mask ratio (optional; canonical results are not modified)...
+Activity not run. Set RUN_MASK_RATIO_ACTIVITY = True and run this cell only.
+[colab] Executing cell 20/20 - Run-all completion summary...
+| value                                                                         
+---|---                                                                         
+notebook_spec | 2.5                                                             
+profile | MULTI-CAPABILITY                                                      
+mode | WORKSHOP                                                                 
+device | cuda                                                                   
+foundation_reconstruction | 0.077686                                            
+flood_water_iou | 0.7301                                                        
+burnscar_iou | 0.925                                                            
+crop_mean_iou | 0.4379                                                          
+byod_enabled | False                                                            
+byod_receipt | None                                                             
+run_id | 20261014T231137Z-ae5917                                                
+output_directory | /content/outputs                                             
+report_bundle | /content/outputs_DIMER_EO_Workshop_Report_2026...               
+Canonical notebook path complete. Metrics are tutorial sample measures on 12 labelled chips per task; use labelled, representative local data before making performance claims.
+[colab] Saving notebook with outputs to '/home/kurt/colab-runs/prithvi-eo-feature-extraction-pipeline-7bd2bff-ee4724/DIMER_AI_for_Earth_Observation_and_Climate_Applications_Workshop_7bd2bff_colab-cli-t4_output.ipynb'...
