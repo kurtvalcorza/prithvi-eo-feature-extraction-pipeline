@@ -118,7 +118,7 @@ md("762f85f8", r"""
 
 **Profile:** `MULTI-CAPABILITY`
 **Mode:** `WORKSHOP`
-**Notebook specification:** `2.1`
+**Notebook specification:** `2.5`
 **Status:** Candidate workshop carrier (clean-runtime execution evidence pending)
 **Recommended runtime:** NVIDIA Tesla T4 or equivalent
 
@@ -131,7 +131,7 @@ The canonical path executes locally in this notebook runtime. It does **not** cl
 The default path:
 
 1. installs the pinned runtime into an isolated Python environment and runs the rest of the notebook there (see §1), so a single **Run all** completes without a restart;
-2. downloads the four pinned model checkpoints, three unseen demonstration scenes, and small **labelled** test samples for flood, burn-scar and crop mapping, each verified by SHA-256;
+2. downloads the four pinned model checkpoints, three new demonstration scenes that are not in the evaluation sets (§5 says which of them each task model saw in training), and small **labelled** test samples for flood, burn-scar and crop mapping, each verified by SHA-256;
 3. validates every input against its data contract before any model runs;
 4. runs four live DIMER model capabilities locally, one model on the GPU at a time;
 5. **evaluates** flood, burn-scar and crop maps against reference labels and against naive baselines;
@@ -179,7 +179,7 @@ The default path downloads (sizes are the pinned byte counts of the upstream fil
 - about 27 MB — 12 labelled Sen1Floods11 test chips, fetched one object at a time;
 - 2.65 GB — the HLS Burn Scars archive, **streamed**: only the 12 pinned test chips and masks (about 80 MB) are kept, the archive itself is never written to disk;
 - 1.18 GB — the multi-temporal crop validation archive, streamed the same way (12 pinned chips and masks kept); and
-- about 19 MB — the four foundation scenes and three unseen demonstration scenes.
+- about 19 MB — the four foundation scenes and three new demonstration scenes (not in the evaluation sets).
 
 Expect roughly 9–10 GB of network transfer and about 8 GB of disk. Streaming the two archives takes several minutes. Only one large model is resident on the GPU at a time. These are estimates from the pinned file sizes, not measurements of a particular runtime.
 
@@ -201,7 +201,7 @@ These first two cells are marked `# dimer: kernel cell` and are the only cells t
 
 **Platform.** The locked environment is built for **Linux x86_64** only (Google Colab, Kaggle or a Linux Jupyter server). On macOS, Windows or ARM the first cell stops with a message instead of installing.
 
-The environment variable `DIMER_NOTEBOOK_CI_PREINSTALLED=1` lets an executor that has already installed exactly these pins run every cell in its own kernel instead. It never selects data or models.
+The environment variable `DIMER_NOTEBOOK_CI_PREINSTALLED=1` lets an executor that has already installed exactly these pins run every cell in its own kernel instead. `DIMER_EO_ENV` sets the folder in which the first cell creates the isolated environment (default `dimer_eo_env/` in the working directory). Neither variable selects data or models.
 """)
 
 # The fleet's uv isolated-environment mechanism (ast-audio-classification-pipeline 16eee39, bart-mnli ee128d2): a
@@ -1415,8 +1415,11 @@ md("65e95022", r"""
 Everything the default path needs is downloaded here, before any model is loaded, and validated against its data contract. Model checkpoints are downloaded immediately before their capability runs.
 
 - **Foundation scenes** — four dates of one HLS location from the Prithvi-EO-2.0 model repository.
-- **Labelled evaluation chips** — 12 test chips with reference masks per task, pinned by the DIMER pipeline repositories. The flood chips come from the official Sen1Floods11 test split; the burn-scar chips from the test role of the burn-scar model repository's splits; the crop chips from spatially blocked test cells of the upstream **validation** archive (see the crop section for what that implies).
-- **New scenes** — one unlabelled scene per task model from the upstream example files, chosen because it appears in none of the evaluation sets. It is used only for the new-scene inference step.
+- **Labelled evaluation chips** — 12 test chips with reference masks per task, pinned by the DIMER pipeline repositories. The flood chips come from the official Sen1Floods11 test split, drawn with a fixed seed, round-robin over the flood-event regions, from chips whose hand label is at least 60 % valid and at least 3 % water; the burn-scar chips from the test role of the burn-scar model repository's splits, drawn with a fixed seed from scenes at least 60 % valid and at least 3 % burn scar (see §9 for what that implies); the crop chips from spatially blocked test cells of the upstream **validation** archive (see the crop section for what that implies). The burn-scar archive's folder names (`training/`, `validation/`) are not the model's split roles: the roles come from the model repository's `splits/*.txt`, which re-split the archive, so a test scene can sit in the archive's `training/` folder.
+- **New scenes** — one unlabelled scene per task model from the upstream example files, chosen because it appears in none of this notebook's evaluation sets. It is used only for the new-scene inference step. *Not in the evaluation sets* does not mean *never seen by the model*; each task model's own splits decide that:
+  - flood (`India_900498`): in the Sen1Floods11 v1.1 hand-labelled **test** split, so the flood model was not trained on it;
+  - burn-scar (`HLS.S30.T10SFF.2018190`): listed in the burn-scar model repository's `splits/train.txt`, so the model was **trained on this new scene**; its map shows in-sample behaviour, not generalisation;
+  - crop (`chip_102_345`): listed in the upstream dataset's `validation_data.txt`, not `training_data.txt`; that is the split the upstream authors may have used to select the checkpoint, so it is not a held-out test scene either.
 """)
 
 code("732ca490", r'''
@@ -1741,7 +1744,7 @@ foundation_frames = np.stack(foundation_stack, axis=1)
 date_ids = [p.stem for p in SCENE_PATHS["foundation"]]
 date_labels = [f"date {i + 1} ({d})" for i, d in enumerate(FOUNDATION_DATES)]
 FOUNDATION_SCENE_ID = "+".join(date_ids)
-# The canonical ratio is the pretraining ratio. Do not edit it here: the controlled-change activity (§14) runs its own
+# The canonical ratio is the pretraining ratio. Do not edit it here: the controlled-change activity (§16) runs its own
 # ratio in a separate cell, with separate state and output files.
 CANONICAL_MASK_RATIO = FOUNDATION_CONFIG["mask_ratio"]
 
@@ -1806,7 +1809,17 @@ print({
 })
 ''')
 
-keep("57172310")
+md("57172310", r"""
+### What did we learn?
+
+**Back to your prediction.** The similarity table printed above gives the cosine similarity of every pair of dates; the largest off-diagonal value is the most similar pair. Compare it with the pair you predicted at the start of §7. All the values are high (close to 1) because the four dates show the same location, so their embeddings share most of their content. Differences in the second or third decimal place are small, the scores are not calibrated, and one location cannot tell you whether such a gap matters.
+
+The 1024-dimensional vectors are **representations**, not climate labels. A similarity score only says two scenes are close under the model's representation; it is not a calibrated probability that the landscapes are "the same."
+
+Masked reconstruction is also not a hazard metric. It asks whether the pretrained encoder-decoder can recover deliberately hidden patches under the pretraining objective.
+
+The next sections move from general representation learning to **task-specific environmental maps**.
+""")
 
 md("8780246e", r"""
 # 8. Capability B — flood mapping
@@ -2016,6 +2029,8 @@ The live DIMER profile is the upstream Prithvi-EO-2.0 burn-scar fine-tune (UNet 
 
 **Evaluation:** 12 labelled scenes from the test role of the burn-scar model repository's splits, streamed from the HLS Burn Scars archive. The baseline predicts **not burned everywhere**.
 
+**How the 12 scenes were chosen.** The supplying DIMER pipeline drew them with a fixed seed from the test scenes whose mask is at least 60 % valid and at least 3 % burn scar, so every scene can be scored. The selection therefore favours scorable, burn-containing scenes, and the model was fine-tuned on the same dataset (HLS Burn Scars), so this is an **in-distribution** sample. Expect higher scores here than on the full upstream test split or on other regions; this notebook does not re-run the full split.
+
 Burned-area mapping benefits from near-infrared and short-wave infrared information that is absent from ordinary RGB imagery; the inputs below are shown as SWIR 2 / NIR / red false colour.
 
 **Exercise:** Before running the cell, predict: will the not-burned baseline have high or low pixel accuracy? What will its burn-scar IoU be?
@@ -2145,7 +2160,15 @@ else:
     print("Crop mapping disabled.")
 ''')
 
-keep("f1ee360c")
+md("f1ee360c", r"""
+### Why the crop model uses three dates
+
+The crop checkpoint was designed around multi-temporal HLS observations. Crop and vegetation classes can be difficult to distinguish from a single image because their spectral signatures overlap, and seasonal trajectories can provide an additional signal.
+
+This notebook does **not measure** what the three dates add: it never runs the model on fewer dates, so the temporal contribution is not isolated here. Treat it as the design rationale for the model, not as a result of this run.
+
+The model's output classes are derived from its training taxonomy. A deployment with a different crop calendar, geographic region, label system, or sensor requires its own representative validation.
+""")
 
 md("613f3a7f", r"""
 # 11. Cross-capability synthesis
@@ -2193,6 +2216,12 @@ md("1408e000", r"""
 
 BYOD is deliberately outside the automatic sample path.
 
+### How to run BYOD after the default run
+
+1. In the §2 controls cell, tick `USE_BYOD`, choose `BYOD_CAPABILITY`, set `BYOD_PATH` (leave it empty in Colab to get an upload dialog) and, if needed, `BYOD_UNITS`. Then re-run the §2 controls cell.
+2. Run the BYOD cell below. A file that breaks the contract is refused with one `Refused:` message naming the rule it broke; nothing is run or written. Fix the file or the controls, re-run the §2 controls cell, and run this cell again.
+3. Re-run the §15 export cell so the BYOD receipt is added to the report bundle. Alternatively, set the BYOD controls first and choose **Run all**.
+
 ### Supported first-release input contracts
 
 - **embedding** — one six-band HLS-style GeoTIFF (HLS digital numbers or reflectance in [0, 1]); height and width multiples of 16; the workshop treats it as one time step;
@@ -2222,13 +2251,16 @@ code("f23033f9", r'''
 import datetime
 
 BYOD_RECEIPT = None
-if not USE_BYOD:
-    print("BYOD disabled — canonical Run all path complete.")
-else:
+BYOD_REFUSAL = None
+
+
+def _byod_input():
+    """Resolve, read and validate the BYOD file. Any contract failure raises ValueError (tifffile's read errors are
+    ValueErrors too); nothing here loads a model or writes an output."""
     if BYOD_CAPABILITY not in {"embedding", "flood", "burnscar", "crop"}:
         raise ValueError(f"Unsupported BYOD_CAPABILITY: {BYOD_CAPABILITY}")
     if BYOD_PATH:
-        byod_path = Path(BYOD_PATH)
+        path = Path(BYOD_PATH)
     else:
         # Interactive fallback is reachable only when USE_BYOD=True and no path is set.
         try:
@@ -2239,25 +2271,37 @@ else:
         if len(uploaded) != 1:
             raise ValueError("Upload exactly one compatible GeoTIFF.")
         name, payload = next(iter(uploaded.items()))
-        byod_path = Path("byod") / Path(name).name
-        byod_path.parent.mkdir(parents=True, exist_ok=True)
-        byod_path.write_bytes(payload)
+        path = Path("byod") / Path(name).name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    if not path.is_file():
+        raise ValueError(f"BYOD file not found: {path}")
+    pixels = load_tiff(path)
+    log_start = len(PREPROCESSING_LOG)
+    label = f"BYOD {BYOD_CAPABILITY} scene {path.stem}"
+    # Validate against the capability's contract before any model is loaded.
+    if BYOD_CAPABILITY == "embedding":
+        validated = validate_foundation_scene(pixels, name=label, units=BYOD_UNITS)
+    elif BYOD_CAPABILITY in {"flood", "burnscar"}:
+        validated = validate_segmentation_chip(pixels, name=label, units=BYOD_UNITS)
+    else:
+        validated = validate_crop_scene(pixels, name=label, units=BYOD_UNITS)
+    return path, pixels, validated, label, log_start
 
-    if not byod_path.is_file():
-        raise FileNotFoundError(f"BYOD file not found: {byod_path}")
+
+if not USE_BYOD:
+    print("BYOD disabled — canonical Run all path complete.")
+else:
+    try:
+        byod_path, raw, scene, input_name, _log_start = _byod_input()
+    except ValueError as exc:  # a refused input is a recoverable outcome, not a crash: nothing was run or written
+        BYOD_REFUSAL = {"capability": BYOD_CAPABILITY, "path": BYOD_PATH or "(upload)", "reason": str(exc)}
+        print(f"Refused: {exc}\nNothing was run and no BYOD output was written. Fix the file or the §2 BYOD controls, "
+              "re-run the §2 controls cell, then run this cell again.")
+
+if USE_BYOD and BYOD_REFUSAL is None:
     byod_id = byod_path.stem
     byod_sha256 = sha256_file(byod_path)
-    raw = load_tiff(byod_path)
-    _log_start = len(PREPROCESSING_LOG)
-    input_name = f"BYOD {BYOD_CAPABILITY} scene {byod_id}"
-
-    # 1. Validate against the capability's contract before any model is loaded.
-    if BYOD_CAPABILITY == "embedding":
-        scene = validate_foundation_scene(raw, name=input_name, units=BYOD_UNITS)
-    elif BYOD_CAPABILITY in {"flood", "burnscar"}:
-        scene = validate_segmentation_chip(raw, name=input_name, units=BYOD_UNITS)
-    else:
-        scene = validate_crop_scene(raw, name=input_name, units=BYOD_UNITS)
 
     # 2. Create and check the output destination before any model is loaded; it does not depend on the sample stages.
     byod_dir = OUTPUT_ROOT / "byod" / BYOD_CAPABILITY / f"{byod_id}-{byod_sha256[:12]}-{RUN_ID}"
@@ -2327,7 +2371,8 @@ This notebook demonstrates that the pinned upstream model assets can be acquired
 
 - The masked-reconstruction score is measurable because the notebook deliberately hides pixels whose truth is known.
 - The flood, burn-scar and crop metrics are measured on 12 labelled chips each. They are **tutorial sample metrics**: no cross-validation, no confidence intervals, no region-stratified estimate.
-- The flood chips come from the official test split and the burn-scar chips from the model repository's test role; the crop chips come from the upstream validation archive and may have influenced checkpoint selection.
+- The flood chips come from the official test split and the burn-scar chips from the model repository's test role; both were filtered to scorable chips (at least 60 % valid, at least 3 % water or burn scar), and the burn-scar model was fine-tuned on the same dataset, so the burn-scar sample is in-distribution and can score above the full split. The crop chips come from the upstream validation archive and may have influenced checkpoint selection.
+- The new-scene maps are qualitative. Only the flood new scene is from a held-out test split; the burn-scar model was trained on its new scene, and the crop new scene is from the validation split (§5).
 - Public samples may overlap the data the foundation model was pretrained on; that cannot be ruled out here.
 
 ## What it does not establish
@@ -2393,7 +2438,7 @@ model_manifest = {
 
 output_root = OUTPUT_ROOT.resolve()
 manifest_rel = "provenance/experiment_manifest.json"
-activity = globals().get("MASK_RATIO_ACTIVITY")  # set only by the optional controlled-change activity (§14)
+activity = globals().get("MASK_RATIO_ACTIVITY")  # set only by the optional controlled-change activity (§16)
 byod = globals().get("BYOD_RECEIPT")
 
 
@@ -2414,10 +2459,10 @@ not_from_this_run = sorted(
 )
 
 experiment_manifest = {
-    "notebook_spec": "2.1",
+    "notebook_spec": "2.5",
     "notebook_profile": "MULTI-CAPABILITY",
     "notebook_mode": "WORKSHOP",
-    "workshop_revision": "0.2.2-candidate",
+    "workshop_revision": "0.2.3-candidate",
     "run_id": RUN_ID,
     "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     "random_seed": SEED,
@@ -2486,7 +2531,7 @@ print({
 ''')
 
 md("982c1134", r"""
-# 16. Troubleshooting
+# 17. Troubleshooting
 
 | Symptom | Likely cause | Corrective action |
 |---|---|---|
@@ -2517,7 +2562,7 @@ keep("5f327d9b")
 code("7a2c0b79", r'''
 # @title Run-all completion summary
 completion = {
-    "notebook_spec": "2.1",
+    "notebook_spec": "2.5",
     "profile": "MULTI-CAPABILITY",
     "mode": "WORKSHOP",
     "device": DEVICE,
@@ -2569,11 +2614,11 @@ _GUIDED_INTRO = r"""
 
 ### What successful execution looks like
 
-You should finish with verified model/data identities, a foundation-model representation/reconstruction result, task metrics against naive baselines for the labelled samples, unseen-scene outputs, and exported predictions/provenance. These are tutorial sample measures, not operational or Philippines-specific validation results.
+You should finish with verified model/data identities, a foundation-model representation/reconstruction result, task metrics against naive baselines for the labelled samples, new-scene outputs (scenes not in the evaluation sets), and exported predictions/provenance. These are tutorial sample measures, not operational or Philippines-specific validation results.
 """
 
 _GUIDED_TRY = r"""
-## Try it yourself — one controlled change
+## 16. Try it yourself — one controlled change
 
 Use the masked-reconstruction capability because it gives you known truth for the deliberately hidden pixels.
 
@@ -2685,7 +2730,7 @@ Use the outputs from your run.
 
 1. **State the question.** Which EO capability did you evaluate?
 2. **Report the primary result against its baseline.** Use masked reconstruction MSE for the reconstruction probe, positive-class IoU/F1 for binary maps, or mean IoU for crop/land-cover mapping as appropriate.
-3. **Add supporting evidence.** Mention a qualitative map pattern, precision/recall tradeoff, class behavior, or unseen-scene observation.
+3. **Add supporting evidence.** Mention a qualitative map pattern, precision/recall tradeoff, class behavior, or a new-scene observation. A new scene is only *not in the evaluation sets*: the burn-scar model was trained on its new scene and the crop new scene is from the crop model's validation split (§5), so those two maps show in-sample behaviour, not generalisation. Only the flood new scene comes from a held-out test split.
 4. **Name the domain-shift risks.** Sensor, band order, surface-reflectance processing, geography, season, spatial resolution, and label taxonomy can all matter.
 5. **State the limits.** These small samples demonstrate executable capability and tutorial-scale evaluation; they do not establish operational accuracy, climate attribution, or Philippines-specific performance.
 """
@@ -2738,12 +2783,12 @@ def apply_guided_layer(items):
         out.insert(1, {"cell_type":"markdown","id":"guided-how-to-use","metadata":{},"source":_GUIDED_INTRO.strip("\n")})
 
     insert_at = next(
-        (i for i,c in enumerate(out) if c.get("cell_type")=="markdown" and _guided_text(c).lstrip().startswith("# 16. Troubleshooting")),
+        (i for i,c in enumerate(out) if c.get("cell_type")=="markdown" and _guided_text(c).lstrip().startswith("# 17. Troubleshooting")),
         len(out)
     )
     joined = "\n".join(_guided_text(c) for c in out if c.get("cell_type")=="markdown")
     guided = []
-    if "## Try it yourself — one controlled change" not in joined:
+    if "## 16. Try it yourself — one controlled change" not in joined:
         guided.append({"cell_type":"markdown","id":"guided-controlled-change","metadata":{},"source":_GUIDED_TRY.strip("\n")})
         guided.append({"cell_type":"code","id":"guided-controlled-change-run","metadata":{},"execution_count":None,"outputs":[],"source":_GUIDED_ACTIVITY_CODE.strip("\n")})
     if "## Self-paced checkpoint" not in joined:
@@ -2759,12 +2804,18 @@ cells = apply_guided_layer(cells)
 nb = dict(orig)
 nb["cells"] = cells
 nb["metadata"] = dict(orig["metadata"])
-nb["metadata"]["workshop_revision"] = "0.2.2-candidate"
-nb["metadata"]["dimer"] = dict(orig["metadata"]["dimer"]) | {"clean_runtime_evidence": "pending", "revision_log": [
+nb["metadata"]["workshop_revision"] = "0.2.3-candidate"
+nb["metadata"]["dimer"] = dict(orig["metadata"]["dimer"]) | {"notebook_spec": "2.5", "clean_runtime_evidence": "pending", "revision_log": [
     {"revision": "0.2.2-candidate", "date": "2026-10-03", "change": (
         "uv isolated environment: a size- and SHA-256-pinned uv wheel, a uv-managed CPython 3.12.12 and a hash-locked "
         "wheel set (--require-hashes --only-binary :all:) replace the unpinned uv and the unhashed PINS install; "
         "Linux x86_64 only; default data, seeds, models and metrics unchanged")},
+    {"revision": "0.2.3-candidate", "date": "2026-10-14", "change": (
+        "review EO2 fixes: new scenes described as 'not in the evaluation sets' with each task model's split membership "
+        "disclosed; burn-scar sample selection rule and in-distribution status stated; similarity-prediction follow-up; "
+        "temporal contribution marked unmeasured; controlled-change activity numbered §16; BYOD refusal printed as one "
+        "message; BYOD rerun steps; DIMER_EO_ENV documented; NOTEBOOK_SPEC 2.5. Default data, seeds, models and metrics "
+        "unchanged")},
 ]}
 content = json.dumps(nb, indent=1, ensure_ascii=False) + "\n"
 if _args.check:

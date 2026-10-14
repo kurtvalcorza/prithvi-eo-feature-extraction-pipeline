@@ -26,7 +26,7 @@ def test_generator_parity() -> None:
 
 def test_metadata_declares_a_candidate_multi_capability_workshop() -> None:
     meta = _load()["metadata"]["dimer"]
-    assert meta["notebook_spec"] == "2.1"
+    assert meta["notebook_spec"] == "2.5"  # EO2-m8: migrated with the 2026-10-12 review fixes
     assert meta["notebook_profile"] == "MULTI-CAPABILITY"
     assert meta["notebook_mode"] == "WORKSHOP"
     assert meta["standalone"] is True
@@ -391,5 +391,93 @@ def test_no_cell_line_over_2000_characters() -> None:
 
 def test_revision_log_records_the_uv_migration() -> None:
     meta = _load()["metadata"]
-    assert meta["workshop_revision"] == "0.2.2-candidate"
-    assert meta["dimer"]["revision_log"][-1]["revision"] == "0.2.2-candidate"
+    assert meta["workshop_revision"] == "0.2.3-candidate"
+    assert [r["revision"] for r in meta["dimer"]["revision_log"]][-2:] == ["0.2.2-candidate", "0.2.3-candidate"]
+
+
+def _markdown() -> list[str]:
+    return ["".join(c["source"]) for c in _load()["cells"] if c["cell_type"] == "markdown"]
+
+
+def test_spec_version_is_declared_consistently() -> None:
+    # EO2-m8: metadata, the opening cell, the exported manifest and the completion summary all declare 2.5.
+    body = _source()
+    assert "**Notebook specification:** `2.5`" in _markdown()[0]
+    assert body.count('"notebook_spec": "2.5"') == 2 and '"notebook_spec": "2.1"' not in body
+
+
+def test_new_scenes_are_not_called_unseen_and_split_membership_is_disclosed() -> None:
+    # EO2-M1 (Kurt's ruling A): the burn-scar new scene is in the model's splits/train.txt.
+    import re
+
+    md = "\n".join(_markdown())
+    assert not re.search(r"\bunseen\b", md, re.I)
+    assert "T10SFF.2018190" in _source()
+    for fact in ("trained on this new scene", "`splits/train.txt`", "hand-labelled **test** split", "`validation_data.txt`"):
+        assert fact in md, fact
+
+
+def test_burn_scar_sample_states_selection_rule_and_in_distribution() -> None:
+    # EO2-m1
+    burn = next(t for t in _markdown() if t.startswith("# 9. Capability C"))
+    assert "at least 3 % burn scar" in burn and "fixed seed" in burn and "in-distribution" in burn
+
+
+def test_prediction_follow_up_and_unmeasured_temporal_claim() -> None:
+    # EO2-m2 / EO2-m3
+    assert "Back to your prediction" in _cell("57172310") and "most similar pair" in _cell("57172310")
+    crop = _cell("f1ee360c")
+    assert "What did the three dates add" not in crop and "does **not measure**" in crop
+
+
+def test_controlled_change_pointers_name_the_activity_section() -> None:
+    # EO2-m4: every "(§N)" pointer to the activity names the section whose heading is the activity.
+    import re
+
+    pointers = set(re.findall(r"controlled-change activity \(§(\d+)\)", _source()))
+    assert pointers == {"16"}
+    assert any(t.startswith("## 16. Try it yourself") for t in _markdown())
+    assert any(t.startswith("# 17. Troubleshooting") for t in _markdown())
+
+
+def test_byod_rerun_steps_and_env_vars_are_documented() -> None:
+    # EO2-m6 / EO2-m7
+    byod = _cell("1408e000")
+    assert "### How to run BYOD after the default run" in byod
+    assert "re-run the §2 controls cell" in byod and "§15 export cell" in byod
+    assert "`DIMER_EO_ENV`" in _cell("aa757eb6")
+
+
+def _run_byod_cell(tmp_path, data, capability="burnscar"):
+    import contextlib
+    import io
+
+    import tifffile
+
+    h = _helpers()
+    h["tifffile"] = tifffile
+    bad = tmp_path / "bad.tif"
+    tifffile.imwrite(bad, data, photometric="minisblack")
+
+    def no_model(*_args, **_kwargs):
+        raise AssertionError("a model was loaded for a refused BYOD input")
+
+    h.update(USE_BYOD=True, BYOD_CAPABILITY=capability, BYOD_PATH=str(bad), BYOD_UNITS="auto",
+             load_foundation_model=no_model, load_segmentation_model=no_model, load_crop_model=no_model,
+             OUTPUT_ROOT=tmp_path / "outputs", RUN_ID="test")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        exec(_cell("f23033f9"), h)
+    return h, out.getvalue()
+
+
+def test_byod_contract_refusal_is_one_message_not_a_traceback(tmp_path) -> None:
+    # EO2-m5 (DAT20): an incompatible file is refused with one message; nothing is loaded or written.
+    import numpy as np
+
+    h, printed = _run_byod_cell(tmp_path, np.zeros((3, 64, 64), np.uint16))
+    assert printed.count("Refused:") == 1 and "Traceback" not in printed
+    assert h["BYOD_RECEIPT"] is None and h["BYOD_REFUSAL"]["capability"] == "burnscar"
+    assert not (tmp_path / "outputs").exists()
+    h, printed = _run_byod_cell(tmp_path, np.zeros((6, 64, 64), np.uint16), capability="nonsense")
+    assert printed.count("Refused:") == 1 and "Unsupported BYOD_CAPABILITY" in printed
