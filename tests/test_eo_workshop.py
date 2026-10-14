@@ -413,7 +413,8 @@ def test_new_scenes_are_not_called_unseen_and_split_membership_is_disclosed() ->
     md = "\n".join(_markdown())
     assert not re.search(r"\bunseen\b", md, re.I)
     assert "T10SFF.2018190" in _source()
-    for fact in ("trained on this new scene", "`splits/train.txt`", "hand-labelled **test** split", "`validation_data.txt`"):
+    for fact in ("trained on this new scene", "`splits/train.txt`", "hand-labelled test split", "`validation_data.txt`",
+                 "training-split example", "validation-split example", "None of the three new-scene maps is an independent test result"):
         assert fact in md, fact
 
 
@@ -446,6 +447,24 @@ def test_byod_rerun_steps_and_env_vars_are_documented() -> None:
     assert "### How to run BYOD after the default run" in byod
     assert "re-run the §2 controls cell" in byod and "§15 export cell" in byod
     assert "`DIMER_EO_ENV`" in _cell("aa757eb6")
+
+
+def test_peer_review_wording_does_not_overclaim() -> None:
+    # Peer review #1-#8: split listings are not proof of training exclusion; crop chips are validation-split evaluation
+    # chips; no predicted direction for selection bias; label provenance; oracle baseline; conditional similarity.
+    md = "\n".join(_markdown())
+    body = _source()
+    for phrase in ("so the flood model was not trained", "12 test chips", "spatially blocked test", "Expect higher scores",
+                   "best any constant", "because the four dates", "Nothing was run", "did not train on"):
+        assert phrase not in body, phrase
+    for phrase in ("have not been independently verified here", "12 labelled evaluation chips from the upstream validation split",
+                   "does not create an independent checkpoint test set", "the direction is not established here",
+                   "### Where the reference labels come from", "agreement with these reference labels", "`JRCWaterHand`",
+                   "oracle constant baseline", "How absent classes are handled", "If the similarities are all high",
+                   "array-contract checks", "transfer experiment", "contain **no** `-9999` values"):
+        assert phrase in md, phrase
+    assert "No model ran and no prediction output was written" in _cell("f23033f9")
+    assert "oracle constant baseline" in _cell("cb180a5b")
 
 
 def _run_byod_cell(tmp_path, data, capability="burnscar"):
