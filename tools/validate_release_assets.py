@@ -137,6 +137,7 @@ INSTALL_CELL_MARKER = "# dimer: kernel cell"
 # ---------------------------------------------------------------------------
 
 NOTEBOOK_SPEC = "2.2"
+WORKSHOP_NOTEBOOK_SPEC = "2.5"  # the supplemental workshop declares its own spec version (EO2-m8)
 ALLOWED_PROFILES = {"E2E", "ARTIFACT-INFERENCE", "TASK-INFERENCE", "MULTI-CAPABILITY", "SMOKE"}
 STATUS_TOKENS = ("Candidate", "Release-grade")
 PLACEHOLDER = re.compile(r"\b(TODO|TBD|FIXME)\b|Insert text here|Tooltip:", re.I)
@@ -700,6 +701,16 @@ def validate_notebooks() -> None:
         "tutorials/README.md must name the notebook spec version",
     )
     _check("standalone" in registry.lower(), "tutorials/README.md must record that the notebook is standalone")
+    workshop = json.loads(_read(tutorials / WORKSHOP_NOTEBOOK_NAME))
+    workshop_spec = workshop.get("metadata", {}).get("dimer", {}).get("notebook_spec")
+    _check(
+        workshop_spec == WORKSHOP_NOTEBOOK_SPEC,
+        f"{WORKSHOP_NOTEBOOK_NAME}: metadata.dimer.notebook_spec must be '{WORKSHOP_NOTEBOOK_SPEC}', found {workshop_spec!r}",
+    )
+    _check(
+        f"DIMER Notebook Specification {WORKSHOP_NOTEBOOK_SPEC}, `WORKSHOP` mode" in registry,
+        f"tutorials/README.md must name the workshop's notebook spec version {WORKSHOP_NOTEBOOK_SPEC}",
+    )
 
 
 def validate_all() -> list[str]:
