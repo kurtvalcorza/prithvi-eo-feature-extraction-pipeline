@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any
 
 GENERATOR_VERSION = "build_notebook.py/2.2"
-NOTEBOOK_SPEC = "2.2"
+NOTEBOOK_SPEC = "2.5"
 
 # ST2: default rewrite rule; a template may replace it with its own `rewrites` list. Every rule must
 # match exactly once across the embedded modules, so a silent no-op is impossible.
@@ -847,12 +847,26 @@ def render(repo: Path, template: dict[str, Any], revision: str | None = None) ->
         if n_mod == 1
         else f"the repository's package ({n_mod} modules under `{ctx['pkg_rel']}/`, at revision `{ctx['module_revision'][:12]}`) verbatim in Section 2"
     )
+    # NOTEBOOK_SPEC 2.5 DOC17-DOC21: canonical use notice; the data-you-bring sentence only with a BYOD path.
+    use_notice = (
+        "> **⚠️ Notice.** For research, training and evaluation only. Not validated for production,\n"
+        "> clinical, diagnostic or safety-critical use. Running this notebook downloads third-party\n"
+        "> model weights and datasets under their own licenses (see the model card) and uses compute\n"
+        "> on your own Colab or Kaggle account. "
+        + ("Data you bring stays in your runtime, and you are\n> responsible for having the right to use it. "
+           if template.get('byod') else "")
+        + "Results here are tutorial evidence, not\n"
+        "> benchmarks. Everything is provided \"as is\", without warranty of any kind. To the maximum\n"
+        "> extent permitted by law, the maintainers and the DIMER platform accept no liability for\n"
+        "> its use."
+    )
     header = (
         f"# {template['title']}\n\n{badges}\n\n"
         f"**Profile:** `{template['profile']}`  \n"
         f"**Mode:** `{mode}`  \n"
         f"**Notebook specification:** DIMER Notebook Specification {NOTEBOOK_SPEC} — **standalone** (§4)  \n"
         f"**Capability:** {template['capability']}\n\n"
+        f"{use_notice}\n\n"
         f"**This notebook is standalone.** It carries {carried}, the pinned model identity and the per-file SHA-256 manifest in Section 3, "
         f"and the exact runtime pins in Section 1, so it keeps working after export even if the repository changes or disappears. Its only "
         f"external dependencies are the pinned Python distributions and {ctx['host']['name']} at the immutable {ctx['host']['revision_label']} `{ctx['MODEL_REVISION']}` "
@@ -915,7 +929,8 @@ def render(repo: Path, template: dict[str, Any], revision: str | None = None) ->
                 + "Hosted runtimes such as Colab and Kaggle import some packages, NumPy and often PyTorch among them, before the "
                 "first cell runs, and Python cannot swap a module that is already loaded. Installing the pins into the notebook's "
                 "own Python would therefore leave mixed versions or require a manual restart. Instead, the next cell builds a "
-                f"separate environment (`dimer_isolated_env_<lock digest>/`) and leaves the kernel's packages untouched: it "
+                f"separate environment (`dimer_isolated_env_<lock digest>/`; set the `DIMER_ISOLATED_ENV` environment variable "
+                "to build it elsewhere) and leaves the kernel's packages untouched: it "
                 f"downloads the pinned `uv` {template['uv']['version']} wheel and refuses it unless its size and SHA-256 match, has "
                 f"`uv` install the managed CPython **{template['managed_python']}** (whatever Python the kernel itself runs), and "
                 f"installs the {n_locked} packages of the carried hash-locked requirements (`{template['lock']}`, compiled from the "
@@ -1066,6 +1081,7 @@ def render(repo: Path, template: dict[str, Any], revision: str | None = None) ->
                 "notebook_profile": template["profile"],
                 "notebook_mode": mode,
                 "notebook_spec": NOTEBOOK_SPEC,
+                "notebook_kind": "TUTORIAL",
                 "standalone": True,
                 **({"environment": "isolated hash-locked uv environment; nothing installed into the kernel"} if isolated else {}),
                 "generated_from": {

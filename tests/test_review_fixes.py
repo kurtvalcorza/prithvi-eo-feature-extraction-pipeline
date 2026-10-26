@@ -230,7 +230,7 @@ def test_fx_m5_m6_text(notebook):
 
 
 def test_fx_s1_declares_notebook_spec_2_2(notebook):
-    assert notebook["metadata"]["dimer"]["notebook_spec"] == "2.2"
+    assert notebook["metadata"]["dimer"]["notebook_spec"] == "2.5" and notebook["metadata"]["dimer"]["notebook_kind"] == "TUTORIAL"
 
 
 # --- End to end on a stub encoder: default run, then the documented BYOD re-run from Section 4 (FX-M2, FX-M3) ------
