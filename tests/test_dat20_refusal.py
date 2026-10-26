@@ -270,4 +270,4 @@ def test_scripted_refusal_input_is_the_real_etc_directory(monkeypatch, tmp_path)
     with pytest.raises(ValueError) as caught:
         _section4(monkeypatch, tmp_path, "/etc")
     line = _refusal_line(caught.value)
-    assert line.startswith("Refused: etc: FileNotFoundError: ") and "pairs.csv" in line
+    assert line.startswith("Refused: etc: ValueError: BYOD folder /etc has no pairs.csv")
