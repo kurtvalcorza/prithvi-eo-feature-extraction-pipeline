@@ -198,7 +198,7 @@ def test_fx_m2_no_cell_indexes_a_sample_only_key(notebook):
 
 def test_fx_m2_section_4_clears_this_notebooks_earlier_exports(notebook, tmp_path, monkeypatch):
     source = _cell(notebook, "if USE_BYOD:")
-    block = source[source.index("os.makedirs('outputs'") : source.index("if USE_BYOD:")]
+    block = source[source.index("os.makedirs('outputs'") : source.index("# DAT20: with USE_BYOD")]  # the BYOD branch now sits in the refusal wrap
     monkeypatch.chdir(tmp_path)
     (tmp_path / "outputs" / f"{STEM}_adapter").mkdir(parents=True)
     (tmp_path / "outputs" / f"{STEM}_adapter" / "adapter.safetensors").write_bytes(b"x")
