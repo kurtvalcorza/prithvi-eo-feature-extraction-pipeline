@@ -1,0 +1,71 @@
+{
+  "repo": "prithvi-eo-feature-extraction-pipeline",
+  "sha": "b51ff75c5fd8b05da1b3883a6001dcfec3fd81ef",
+  "notebook": "tutorials/prithvi_eo_feature_extraction_colab.ipynb",
+  "blob": "eb1f324fe2b6d6b5bd9311bfd203a9a6e948eb21",
+  "gpu": "T4",
+  "session": "suite-prithvi-b51ff75-e1ee",
+  "started_utc": "2026-10-30T18:21:17+00:00",
+  "runner": "Colab CLI `colab exec -f` on a fresh session (not a browser Run all)",
+  "overrides": [
+    {
+      "name": "USE_BYOD",
+      "from": "False",
+      "to": "True"
+    },
+    {
+      "name": "BYOD_PATH",
+      "from": "''",
+      "to": "'/etc'"
+    }
+  ],
+  "run_copy_blob": "2ae76dfe51223cfd057a5f98c7389f49750eca1f",
+  "run_copy_sha256": "4b9daf6498ccdd61185dc3aae8875bcba822058685c8b6b6275e6f3bbe7c7a66",
+  "run_copy_note": "refusal run: the run copy is the committed notebook with the listed assignment overrides, cut immediately after the refusal cell and re-serialised (nbformat layout); input_unchanged compares against that copy",
+  "truncated_after_cell": "prithvi_eo_feature_extraction-16",
+  "refusal_cell_ref": "prithvi_eo_feature_extraction-16",
+  "refusal_cell_index": 7,
+  "cells_dropped": 14,
+  "code_cells_dropped": 4,
+  "original_sha256": "3d57a5d7420d05325bad5005da0bd6c221e1b1d0067a7812e5b4ba5cf0cea695",
+  "status": "[suite-prithvi-b51ff75-e1ee] gpu-t4-s-ass1c3-239z4bxvmzc1r | Hardware: T4 | Shape: Standard | Variant: GPU | Status: IDLE",
+  "exec_exit_code": 0,
+  "stopped": true,
+  "stop_verified": true,
+  "wall_s": 192.8,
+  "input_unchanged": true,
+  "executed_file": "prithvi_eo_feature_extraction_colab_b51ff75_colab-cli-t4_output.ipynb",
+  "log_cells": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "log_total": 7,
+  "code_cells": 7,
+  "executed_cells": 4,
+  "errors": [
+    {
+      "cell": "prithvi_eo_feature_extraction-16",
+      "ename": "IsolatedCellRefusal",
+      "evalue": "etc: ValueError: BYOD folder /etc has no pairs.csv (columns id, image, label, optional group); fix the input and run this cell again (the earlier results of this session and their outputs/ files were removed)."
+    }
+  ],
+  "execution_counts": [],
+  "sequential": null,
+  "executed_sha256": "aea3d4c71313ff5caba8600bb01bbe0eaa45236603de165df76db27a2faa03e2",
+  "log_sequential_complete": true,
+  "mode": "expect_refusal",
+  "refusal_line": "Refused: etc: ValueError: BYOD folder /etc has no pairs.csv (columns id, image, label, optional group); fix the input and run this cell again (the earlier results of this session and their outputs/ files were removed).",
+  "halting_cell_index": 7,
+  "halting_cell_id": "prithvi_eo_feature_extraction-16",
+  "error_cells": [
+    7
+  ],
+  "refusal_fail_reasons": [],
+  "refusal_ok": true,
+  "verdict": "PASS"
+}
