@@ -53,7 +53,8 @@ CODE_MARKERS = (
     "BYOD_PATH = ''",
     "uploaded = files.upload() or {}",
     "splits = fetch_sample_dataset(cache_dir='weights/hls-burn-scars')",
-    "splits = split_dataset(load_byod_dataset(byod_path), seed=0)",
+    "byod_records = load_byod_dataset(byod_path)",
+    "splits = split_dataset(byod_records, seed=0)",
     "dataset_report = dataset_manifest(",
     "write_sample_pair(test_records[0], byod_template / 'sample_chip.tif', byod_template / 'sample_label.tif')",
     # Review fixes (2026-10-02 review, FX-M2 / FX-m1 / FX-m2 / FX-m3): stale exports cleared, BYOD-safe names, the
