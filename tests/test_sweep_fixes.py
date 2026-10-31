@@ -12,6 +12,7 @@ import importlib.util
 import json
 import re
 import sys
+import textwrap
 import types
 from pathlib import Path
 
@@ -224,8 +225,11 @@ def test_swp_f_frozen_evaluation_sets_the_trained_probe_aside_and_restores_it(no
 
 
 def _byod_block(notebook: dict) -> str:
+    # DAT20: the refusal helpers, then the BYOD branch from inside the refusal wrap (dedented).
     source = _cell(notebook, "if USE_BYOD:")
-    return source[source.index("if USE_BYOD:") : source.index("else:\n    splits = fetch_sample_dataset")]
+    helpers = source[source.index("class BYODRefusal(ValueError):") : source.index("os.makedirs('outputs', exist_ok=True)")]
+    branch = source[source.index("    if USE_BYOD:\n") : source.index("    else:\n        splits = fetch_sample_dataset")]
+    return helpers + textwrap.dedent(branch)
 
 
 def _byod_namespace(path: str) -> dict:
@@ -249,9 +253,9 @@ def test_swp_b_byod_path_reads_a_folder_without_colab(notebook, tmp_path, monkey
 def test_swp_b_missing_path_and_off_colab_upload_give_clear_messages(notebook, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setitem(sys.modules, "google.colab", None)
-    with pytest.raises(FileNotFoundError, match="BYOD_PATH 'nope.zip' does not exist"):
+    with pytest.raises(ValueError, match="^nope.zip: BYOD_PATH 'nope.zip' does not exist"):  # DAT20: a BYODRefusal
         exec(compile(_byod_block(notebook), "<byod>", "exec"), _byod_namespace("nope.zip"))
-    with pytest.raises(RuntimeError, match="upload dialog exists only in Google Colab"):
+    with pytest.raises(ValueError, match="upload dialog exists only in Google Colab"):
         exec(compile(_byod_block(notebook), "<byod>", "exec"), _byod_namespace(""))
 
 
