@@ -271,3 +271,87 @@ def test_scripted_refusal_input_is_the_real_etc_directory(monkeypatch, tmp_path)
         _section4(monkeypatch, tmp_path, "/etc")
     line = _refusal_line(caught.value)
     assert line.startswith("Refused: etc: ValueError: BYOD folder /etc has no pairs.csv")
+
+
+# --- the catch is narrow: only bad input is refused; an internal TypeError/KeyError/OSError keeps its traceback ---------
+
+
+def test_the_byod_catch_is_narrow_in_the_notebook_source():
+    source = _cell(BYOD_CELL)
+    branch = source[source.index("try:\n    if USE_BYOD:\n") : source.index(WRAP_END) + len(WRAP_END)]
+    caught = [line.strip() for line in branch.splitlines() if line.strip().startswith("except ")]
+    assert caught == ["except ImportError:", "except (OSError, zipfile.BadZipFile) as exc:", "except TypeError as exc:", "except BYODRefusal as exc:", "except ValueError as exc:"], caught
+    assert "        try:\n            byod_records = load_byod_dataset(byod_path)\n        except (OSError, zipfile.BadZipFile) as exc:\n" in branch
+    assert "\nexcept BYODRefusal as exc:\n    refuse_byod(exc.file_name, exc.reason)\nexcept ValueError as exc:\n    if not USE_BYOD:\n        raise\n" in branch
+
+
+def _bad_crc_zip() -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("pairs.csv", "id,image,label\n" + "c1,c1.tif,c1_label.tif\n" * 4)
+    data = bytearray(buffer.getvalue())
+    data[data.index(b"c1,c1.tif")] = ord("d")  # the stored bytes no longer match their CRC-32
+    return bytes(data)
+
+
+@pytest.mark.parametrize(
+    ("kind", "name", "rule"),
+    [
+        ("not a zip", "fake.zip", "the dataset cannot be read (BadZipFile: File is not a zip file)"),
+        ("bad CRC", "crc.zip", "the dataset cannot be read (BadZipFile: Bad CRC-32"),
+        ("short pairs.csv row", "chips", "a pairs.csv row has fewer cells than the header (TypeError: "),
+    ],
+)
+def test_real_bad_input_is_still_one_refused_line(monkeypatch, tmp_path, kind, name, rule):
+    monkeypatch.setitem(sys.modules, "google.colab", None)
+    if kind == "not a zip":
+        (tmp_path / name).write_bytes(b"not a zip at all")
+    elif kind == "bad CRC":
+        (tmp_path / name).write_bytes(_bad_crc_zip())
+    else:
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "pairs.csv").write_text("id,image,label\nc1\n", encoding="utf-8")
+    with pytest.raises(ValueError) as caught:
+        _section4(monkeypatch, tmp_path, str(tmp_path / name))
+    line = _refusal_line(caught.value)
+    assert line.startswith(f"Refused: {name}: {rule}") and line.count("Refused:") == 1, line
+
+
+def _run_section4_keeping_namespace(monkeypatch, tmp_path, path: str, extra: dict) -> tuple[dict, BaseException]:
+    monkeypatch.chdir(tmp_path)
+    source = _cell(BYOD_CELL)
+    source = source[: source.index(WRAP_END) + len(WRAP_END)].replace("USE_BYOD = False", "USE_BYOD = True", 1).replace("BYOD_PATH = ''", f"BYOD_PATH = {path!r}", 1)
+    ns = _namespace(**extra)
+    with pytest.raises(BaseException) as caught:
+        exec(compile(source, "<section 4>", "exec"), ns)
+    return ns, caught.value
+
+
+@pytest.mark.parametrize("error", [TypeError("internal helper bug"), KeyError("internal key"), OSError("internal I/O bug")], ids=["TypeError", "KeyError", "OSError"])
+def test_an_internal_error_after_the_loader_keeps_its_traceback_and_clears_nothing(monkeypatch, tmp_path, error):
+    import traceback
+
+    monkeypatch.setitem(sys.modules, "google.colab", None)
+    (tmp_path / "chips").mkdir()
+
+    def broken_split(records, **kwargs):
+        raise error
+
+    extra = {"load_byod_dataset": lambda _path: [{"id": "c1", "group": "fire-1"}], "split_dataset": broken_split}
+    ns, raised = _run_section4_keeping_namespace(monkeypatch, tmp_path, str(tmp_path / "chips"), extra)
+    assert raised is error and not getattr(raised, "dimer_refusal", False)
+    rendered = "".join(traceback.format_exception(raised))
+    assert rendered.startswith("Traceback") and "broken_split" in rendered and "Refused:" not in rendered
+    assert {k: ns.get(k) for k in EARLIER} == EARLIER  # an internal error clears none of the earlier run's results
+
+
+def test_a_keyerror_inside_the_loader_is_not_turned_into_a_refusal(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "google.colab", None)
+    (tmp_path / "chips").mkdir()
+
+    def buggy_loader(_path):
+        raise KeyError("loader bug")
+
+    with pytest.raises(KeyError, match="loader bug") as caught:
+        _section4(monkeypatch, tmp_path, str(tmp_path / "chips"), extra={"load_byod_dataset": buggy_loader})
+    assert not getattr(caught.value, "dimer_refusal", False)
