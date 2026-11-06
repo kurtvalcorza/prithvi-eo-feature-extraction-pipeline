@@ -211,6 +211,7 @@ The environment variable `DIMER_NOTEBOOK_CI_PREINSTALLED=1` lets an executor tha
 #   x86_64-manylinux_2_28 --generate-hashes --only-binary :all: --exclude-newer 2026-09-26T00:00:00Z
 #   -o tutorials/requirements-eo-workshop.lock.txt
 # (--exclude-newer keeps the transitive versions to what the 2026-09-26 Colab run of blob 970b0e8b could resolve).
+# pillow alone is exempted (--exclude-newer-package pillow=2026-10-17T00:00:00Z) for the 13.0.0 advisory upgrade.
 MANAGED_PYTHON = "3.12.12"
 UV_WHEEL = {
     "url": "https://files.pythonhosted.org/packages/1e/fd/432451d732917c49152a291de3ef171aa6b0f1a22d39780fb2c1f085ca4c/uv-0.12.15-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
